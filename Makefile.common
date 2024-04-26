@@ -36,6 +36,7 @@ GO_VERSION        ?= $(shell $(GO) version)
 GO_VERSION_NUMBER ?= $(word 3, $(GO_VERSION))
 PRE_GO_111        ?= $(shell echo $(GO_VERSION_NUMBER) | grep -E 'go1\.(10|[0-9])\.')
 
+# INFO: promu是普米的编译和发布的工具,后面会进行安装
 PROMU        := $(FIRST_GOPATH)/bin/promu
 pkgs          = ./...
 
@@ -103,9 +104,12 @@ endif
 # This rule is used to forward a target like "build" to "common-build".  This
 # allows a new "build" target to be defined in a Makefile which includes this
 # one and override "common-build" without override warnings.
+# IMPT: 将target改写为common-target的形式(因为这个Makefile是通用的，防止和其他的Makefile冲突)
 %: common-% ;
 
+# IMPT: 这个一个默认的目标，也就第一个目标(即使用make命令就行执行，后面不加参数)
 .PHONY: common-all
+# INFO: 这里的伪目标在前面都会自动加上"common-"
 common-all: precheck style check_license lint yamllint unused build test
 
 .PHONY: common-style

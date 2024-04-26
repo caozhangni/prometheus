@@ -25,6 +25,7 @@ TSDB_BENCHMARK_OUTPUT_DIR ?= ./benchout
 
 GOLANGCI_LINT_OPTS ?= --timeout 4m
 
+# IMPT: 引入通用的Makefile
 include Makefile.common
 
 DOCKER_IMAGE_NAME       ?= prometheus
@@ -120,6 +121,7 @@ plugins/plugins.go: plugins.yml plugins/generate.go
 plugins: plugins/plugins.go
 
 .PHONY: build
+# IMPT: 最后会调用通用Makefile的common-build伪目标
 build: assets npm_licenses assets-compress plugins common-build
 
 .PHONY: bench_tsdb

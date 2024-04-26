@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/KimMachineGun/automemlimit/memlimit"
+	// INFO: Kingpin 是一种流畅风格、类型安全的命令行解析器。它支持标志、嵌套命令和位置参数
 	"github.com/alecthomas/kingpin/v2"
 	"github.com/alecthomas/units"
 	"github.com/go-kit/log"
@@ -41,8 +42,12 @@ import (
 	"github.com/grafana/regexp"
 	"github.com/mwitkow/go-conntrack"
 	"github.com/oklog/run"
+
+	// INFO: client_golang是独立的普米golang客户端,可用于自己写metrics接口等
 	"github.com/prometheus/client_golang/prometheus"
 	versioncollector "github.com/prometheus/client_golang/prometheus/collectors/version"
+
+	// INFO: common是普米各组件间共享的类库
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/promlog"
 	promlogflag "github.com/prometheus/common/promlog/flag"
@@ -95,11 +100,18 @@ var (
 	defaultRetentionString   = "15d"
 	defaultRetentionDuration model.Duration
 
-	agentMode                       bool
+	// INFO: 普米的代理模式开关(会通过配置进行设置,后面的代码有)
+	agentMode bool
+	// INFO: 普米有两种模式,agent模式和server模式
+	// agentOnlyFlags保存了agent模式的命令行选项
+	// serverOnlyFlags保存了server模式的命令行选项
 	agentOnlyFlags, serverOnlyFlags []string
 )
 
+// NOTE: 初始化函数,在调用main函数之前执行
 func init() {
+	// NOTE: 这里调用了普米客户端将用于采集版本信息的Collector注册进来
+	// 具体指标暴露(即/metrics接口)的代码在web/web.go中
 	prometheus.MustRegister(versioncollector.NewCollector(strings.ReplaceAll(appName, "-", "_")))
 
 	var err error
@@ -110,6 +122,7 @@ func init() {
 }
 
 // serverOnlyFlag creates server-only kingpin flag.
+// INFO: 用于设置server模式下的命令行选项
 func serverOnlyFlag(app *kingpin.Application, name, help string) *kingpin.FlagClause {
 	return app.Flag(name, fmt.Sprintf("%s Use with server mode only.", help)).
 		PreAction(func(parseContext *kingpin.ParseContext) error {
@@ -120,6 +133,7 @@ func serverOnlyFlag(app *kingpin.Application, name, help string) *kingpin.FlagCl
 }
 
 // agentOnlyFlag creates agent-only kingpin flag.
+// INFO: 用于设置agent模式下的命令行选项
 func agentOnlyFlag(app *kingpin.Application, name, help string) *kingpin.FlagClause {
 	return app.Flag(name, fmt.Sprintf("%s Use with agent mode only.", help)).
 		PreAction(func(parseContext *kingpin.ParseContext) error {
@@ -129,11 +143,12 @@ func agentOnlyFlag(app *kingpin.Application, name, help string) *kingpin.FlagCla
 		})
 }
 
+// INFO: 该对象用于保存命令行选项的配置
 type flagConfig struct {
-	configFile string
+	configFile string // INFO: 普米主配置文件路径
 
-	agentStoragePath    string
-	serverStoragePath   string
+	agentStoragePath    string // INFO: agent模式下的数据存储路径
+	serverStoragePath   string // INFO: server模式下的数据存储路径
 	notifier            notifier.Options
 	forGracePeriod      model.Duration
 	outageTolerance     model.Duration
@@ -142,7 +157,7 @@ type flagConfig struct {
 	web                 web.Options
 	scrape              scrape.Options
 	tsdb                tsdbOptions
-	agent               agentOptions
+	agent               agentOptions // INFO: agent模式下的命令行选项
 	lookbackDelta       model.Duration
 	webTimeout          model.Duration
 	queryTimeout        model.Duration
@@ -150,6 +165,7 @@ type flagConfig struct {
 	queryMaxSamples     int
 	RemoteFlushDeadline model.Duration
 
+	// INFO: 特性列表,通常是实验性质的,比如agent模式
 	featureList   []string
 	memlimitRatio float64
 	// These options are extracted from featureList
@@ -164,7 +180,7 @@ type flagConfig struct {
 	prometheusURL   string
 	corsRegexString string
 
-	promlogConfig promlog.Config
+	promlogConfig promlog.Config // INFO: 普米日志相关配置
 }
 
 // setFeatureListOptions sets the corresponding options from the featureList.
@@ -240,6 +256,8 @@ func (c *flagConfig) setFeatureListOptions(logger log.Logger) error {
 	return nil
 }
 
+// NOTE: main函数
+// 用于模块初始化与组装
 func main() {
 	if os.Getenv("DEBUG") != "" {
 		runtime.SetBlockProfileRate(20)
@@ -251,6 +269,7 @@ func main() {
 		newFlagRetentionDuration model.Duration
 	)
 
+	// INFO: 创建命令行选项对象
 	cfg := flagConfig{
 		notifier: notifier.Options{
 			Registerer: prometheus.DefaultRegisterer,
@@ -262,8 +281,16 @@ func main() {
 		promlogConfig: promlog.Config{},
 	}
 
+	// INFO: 普米有3种类型的命令行选项(flag)
+	// 1 调用a.Flag添加的为通用的flag
+	// 2 调用serverOnlyFlag添加的为只在server模式下使用的flag
+	// 3 调用agentOnlyFlag添加的为只在agent模式下使用的flag
+
+	// INFO: 创建用于命令行解析的kingpin Application对象
+	// 这里New的第一个参数其实是普米可执行文件的名字
 	a := kingpin.New(filepath.Base(os.Args[0]), "The Prometheus monitoring server").UsageWriter(os.Stdout)
 
+	// INFO: 设置版本的flag(即通过--version可以查看普米的版本信息)
 	a.Version(version.Print(appName))
 
 	a.HelpFlag.Short('h')
@@ -432,6 +459,7 @@ func main() {
 	// TODO: Remove in Prometheus 3.0.
 	alertmanagerTimeout := a.Flag("alertmanager.timeout", "[DEPRECATED] This flag has no effect.").Hidden().String()
 
+	// INFO: 即在查询当前最新值的时候，只要发现这个参数指定的时间段内有数据，就取最新的那个点返回，这个时间段内没数据，就不返回了
 	serverOnlyFlag(a, "query.lookback-delta", "The maximum lookback duration for retrieving metrics during expression evaluations and federation.").
 		Default("5m").SetValue(&cfg.lookbackDelta)
 
