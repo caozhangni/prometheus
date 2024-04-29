@@ -31,3 +31,10 @@ npm_licenses.tar.bz2
 
 # Ignore parser debug
 y.output
+
+## 我的
+.vscode
+.hypothesis
+prometheus.code-workspace
+# debug时生成的临时bin文件
+__debug_bin*

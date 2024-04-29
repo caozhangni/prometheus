@@ -476,9 +476,15 @@ func main() {
 	a.Flag("scrape.discovery-reload-interval", "Interval used by scrape manager to throttle target groups updates.").
 		Hidden().Default("5s").SetValue(&cfg.scrape.DiscoveryReloadInterval)
 
+	// INFO: 启用一些新的特性,如agent模式,这些特性一般都是实验性质的,功能上并不稳定
+	// 可通过查看官方文档https://prometheus.io/docs/prometheus/latest/feature_flags/了解
 	a.Flag("enable-feature", "Comma separated feature names to enable. Valid options: agent, auto-gomemlimit, exemplar-storage, expand-external-labels, memory-snapshot-on-shutdown, promql-per-step-stats, promql-experimental-functions, remote-write-receiver (DEPRECATED), extra-scrape-metrics, new-service-discovery-manager, auto-gomaxprocs, no-default-scrape-port, native-histograms, otlp-write-receiver, created-timestamp-zero-ingestion, concurrent-rule-eval. See https://prometheus.io/docs/prometheus/latest/feature_flags/ for more details.").
 		Default("").StringsVar(&cfg.featureList)
 
+	// INFO: 添加日志配置的命令行选项到a
+	// 目前只有log.level和log.format两个flag
+	// log.level用于配置日志级别(more为info)
+	// log.format为日志输出的格式(默认为logformat,即k1=v1 k2=v2的形式,也可以改为json)
 	promlogflag.AddFlags(a, &cfg.promlogConfig)
 
 	a.Flag("write-documentation", "Generate command line documentation. Internal use.").Hidden().Action(func(ctx *kingpin.ParseContext) error {
@@ -504,6 +510,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	// INFO: 在agent模式下配置了server模式的命令行选项,则直接退出
 	if agentMode && len(serverOnlyFlags) > 0 {
 		fmt.Fprintf(os.Stderr, "The following flag(s) can not be used in agent mode: %q", serverOnlyFlags)
 		os.Exit(3)
