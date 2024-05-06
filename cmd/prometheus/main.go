@@ -483,7 +483,7 @@ func main() {
 
 	// INFO: 添加日志配置的命令行选项到a
 	// 目前只有log.level和log.format两个flag
-	// log.level用于配置日志级别(more为info)
+	// log.level用于配置日志级别(默认为info)
 	// log.format为日志输出的格式(默认为logformat,即k1=v1 k2=v2的形式,也可以改为json)
 	promlogflag.AddFlags(a, &cfg.promlogConfig)
 
@@ -516,6 +516,7 @@ func main() {
 		os.Exit(3)
 	}
 
+	// INFO: 在非agent模式下配置了agent模式的命令行选项,则直接退出
 	if !agentMode && len(agentOnlyFlags) > 0 {
 		fmt.Fprintf(os.Stderr, "The following flag(s) can only be used in agent mode: %q", agentOnlyFlags)
 		os.Exit(3)
@@ -643,6 +644,7 @@ func main() {
 	klogv2.ClampLevel(6)
 	klogv2.SetLogger(log.With(logger, "component", "k8s_client_runtime"))
 
+	// INFO: 不同模式下应用的名称
 	modeAppName := "Prometheus Server"
 	mode := "server"
 	if agentMode {
@@ -660,16 +662,23 @@ func main() {
 	level.Info(logger).Log("fd_limits", prom_runtime.FdLimits())
 	level.Info(logger).Log("vm_limits", prom_runtime.VMLimits())
 
+	// INFO: 指定具体的存储实现
 	var (
-		localStorage  = &readyStorage{stats: tsdb.NewDBStats()}
-		scraper       = &readyScrapeManager{}
+		// INFO: 创建本地存储对象，具体的存储实现后面的代码会指定
+		// 注意: server模型和agent模式下指定的本地存储实现会有所不同
+		localStorage = &readyStorage{stats: tsdb.NewDBStats()}
+		scraper      = &readyScrapeManager{}
+		// INFO: 创建一个远程存储对象
 		remoteStorage = remote.NewStorage(log.With(logger, "component", "remote"), prometheus.DefaultRegisterer, localStorage.StartTime, localStoragePath, time.Duration(cfg.RemoteFlushDeadline), scraper)
+		// INFO: 将本地存储和远程存储组合为一个新的存储(对存储的使用者来说是透明的,因为暴露的都是相同的接口)
 		fanoutStorage = storage.NewFanout(logger, localStorage, remoteStorage)
 	)
 
+	// INFO: 前端页面相关
 	var (
 		ctxWeb, cancelWeb = context.WithCancel(context.Background())
-		ctxRule           = context.Background()
+		// INFO: 告警规则相关的上下文
+		ctxRule = context.Background()
 
 		notifierManager = notifier.NewManager(&cfg.notifier, log.With(logger, "component", "notifier"))
 
@@ -696,6 +705,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	// INFO: 服务发现相关
 	if cfg.enableNewSDManager {
 		{
 			discMgr := discovery.NewManager(ctxScrape, log.With(logger, "component", "discovery manager scrape"), prometheus.DefaultRegisterer, sdMetrics, discovery.Name("scrape"))
@@ -734,6 +744,7 @@ func main() {
 		}
 	}
 
+	// INFO: 数据抓取相关
 	scrapeManager, err := scrape.NewManager(
 		&cfg.scrape,
 		log.With(logger, "component", "scrape manager"),
@@ -749,7 +760,7 @@ func main() {
 		tracingManager = tracing.NewManager(logger)
 
 		queryEngine *promql.Engine
-		ruleManager *rules.Manager
+		ruleManager *rules.Manager // INFO: 规则管理器
 	)
 
 	if cfg.enableAutoGOMAXPROCS {
@@ -775,7 +786,9 @@ func main() {
 		}
 	}
 
+	// INFO: 代理模式下,不需要进行告警规则的评估
 	if !agentMode {
+		// INFO: 创建查询引擎选项对象
 		opts := promql.EngineOpts{
 			Logger:                   log.With(logger, "component", "query engine"),
 			Reg:                      prometheus.DefaultRegisterer,
@@ -791,6 +804,7 @@ func main() {
 			EnablePerStepStats:   cfg.enablePerStepStats,
 		}
 
+		// INFO: 创建查询引擎对象
 		queryEngine = promql.NewEngine(opts)
 
 		ruleManager = rules.NewManager(&rules.ManagerOptions{
@@ -859,6 +873,7 @@ func main() {
 	// This is passed to ruleManager.Update().
 	externalURL := cfg.web.ExternalURL.String()
 
+	// INFO: 保存有各个模块实现的reloader
 	reloaders := []reloader{
 		{
 			name:     "db_storage",
@@ -921,7 +936,9 @@ func main() {
 			},
 		}, {
 			name: "rules",
+			// INFO: 普米reload时,评估使用新的配置
 			reloader: func(cfg *config.Config) error {
+				// INFO: 代理模式下,不需要进行告警规则的评估
 				if agentMode {
 					// No-op in Agent mode
 					return nil
@@ -930,6 +947,7 @@ func main() {
 				// Get all rule files matching the configuration paths.
 				var files []string
 				for _, pat := range cfg.RuleFiles {
+					// INFO: 验证告警规则配置文件是否真实存在
 					fs, err := filepath.Glob(pat)
 					if err != nil {
 						// The only error can be a bad pattern.
@@ -937,6 +955,7 @@ func main() {
 					}
 					files = append(files, fs...)
 				}
+				// INFO: 加载告警规则配置
 				return ruleManager.Update(
 					time.Duration(cfg.GlobalConfig.EvaluationInterval),
 					files,
@@ -956,6 +975,7 @@ func main() {
 
 	// Start all components while we wait for TSDB to open but only load
 	// initial config and mark ourselves as ready after it completed.
+	// INFO: 该通道用于接收数据库已经打开的消息
 	dbOpen := make(chan struct{})
 
 	// sync.Once is used to make sure we can close the channel at different execution stages(SIGTERM or when the config is loaded).
@@ -986,11 +1006,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// IMPT: 这里的run.Group用于管理main函数启动的所有协程的生命周期(协程的启动和优雅停止)
 	var g run.Group
 	{
 		// Termination handler.
+		// INFO: 用于处理监听到操作系统中断信号的逻辑
+		// term用于监听操作系统中断信号的通道
 		term := make(chan os.Signal, 1)
+		// IMPT: 这里监听用户的ctrl+c及进程的终止信号(15)
 		signal.Notify(term, os.Interrupt, syscall.SIGTERM)
+		// INFO: 用于监听取消的通道
 		cancel := make(chan struct{})
 		g.Add(
 			func() error {
@@ -1040,15 +1065,18 @@ func main() {
 			},
 		)
 	}
+	// INFO: 代理模式下,不需要进行规则的评估
 	if !agentMode {
 		// Rule manager.
 		g.Add(
 			func() error {
 				<-reloadReady.C
+				// INFO: 启动告警规则的评估,该方法会阻塞直到规则评估被停止
 				ruleManager.Run()
 				return nil
 			},
 			func(err error) {
+				// INFO: 停止规则评估
 				ruleManager.Stop()
 			},
 		)
@@ -1095,6 +1123,7 @@ func main() {
 
 		// Make sure that sighup handler is registered with a redirect to the channel before the potentially
 		// long and synchronous tsdb init.
+		// INFO: 重新加载handler
 		hup := make(chan os.Signal, 1)
 		signal.Notify(hup, syscall.SIGHUP)
 		cancel := make(chan struct{})
@@ -1104,11 +1133,11 @@ func main() {
 
 				for {
 					select {
-					case <-hup:
+					case <-hup: // INFO: 等待捕获SIGHUP信号,该信号常用于通知进程重新读取配置文件
 						if err := reloadConfig(cfg.configFile, cfg.enableExpandExternalLabels, cfg.tsdb.EnableExemplarStorage, logger, noStepSubqueryInterval, reloaders...); err != nil {
 							level.Error(logger).Log("msg", "Error reloading config", "err", err)
 						}
-					case rc := <-webHandler.Reload():
+					case rc := <-webHandler.Reload(): // INFO: 用于捕获web接口的reload信号
 						if err := reloadConfig(cfg.configFile, cfg.enableExpandExternalLabels, cfg.tsdb.EnableExemplarStorage, logger, noStepSubqueryInterval, reloaders...); err != nil {
 							level.Error(logger).Log("msg", "Error reloading config", "err", err)
 							rc <- err
@@ -1129,17 +1158,19 @@ func main() {
 	}
 	{
 		// Initial configuration loading.
+		// INFO: 普米启动时,立即进行一次reload操作
 		cancel := make(chan struct{})
 		g.Add(
 			func() error {
 				select {
-				case <-dbOpen:
+				case <-dbOpen: // INFO: 等待TSDB打开
 				// In case a shutdown is initiated before the dbOpen is released
-				case <-cancel:
+				case <-cancel: // INFO: 取消则关闭reload操作
 					reloadReady.Close()
 					return nil
 				}
 
+				// INFO: TSDB打开后,立即进行一次reload操作
 				if err := reloadConfig(cfg.configFile, cfg.enableExpandExternalLabels, cfg.tsdb.EnableExemplarStorage, logger, noStepSubqueryInterval, reloaders...); err != nil {
 					return fmt.Errorf("error loading config from %q: %w", cfg.configFile, err)
 				}
@@ -1160,6 +1191,7 @@ func main() {
 		// TSDB.
 		opts := cfg.tsdb.ToTSDBOptions()
 		cancel := make(chan struct{})
+		// INFO: 立即启动tsdb
 		g.Add(
 			func() error {
 				level.Info(logger).Log("msg", "Starting TSDB ...")
@@ -1174,6 +1206,7 @@ func main() {
 					}
 				}
 
+				// INFO: 启动TSDB并返回数据库实例对象
 				db, err := openDBWithMetrics(localStoragePath, logger, prometheus.DefaultRegisterer, &opts, localStorage.getStats())
 				if err != nil {
 					return fmt.Errorf("opening storage failed: %w", err)
@@ -1198,8 +1231,10 @@ func main() {
 				)
 
 				startTimeMargin := int64(2 * time.Duration(cfg.tsdb.MinBlockDuration).Seconds() * 1000)
+				// IMPT: 设置存储的具体实现为TSDB
 				localStorage.Set(db, startTimeMargin)
 				db.SetWriteNotified(remoteStorage)
+				// INFO: 关闭此通道,告知数据库已经打开
 				close(dbOpen)
 				<-cancel
 				return nil
@@ -1212,6 +1247,8 @@ func main() {
 			},
 		)
 	}
+	// IMPT: 如果过是代理模式,则需要启动tsdb的agent(即wal存储)
+	// 因为代理模式会从抓取数据并远程写,并不会写入本地,但是也会有crash-safe的问题,所以还是需要wal
 	if agentMode {
 		// WAL storage.
 		opts := cfg.agent.ToAgentOptions()
