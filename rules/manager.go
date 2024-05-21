@@ -88,13 +88,14 @@ func DefaultEvalIterationFunc(ctx context.Context, g *Group, evalTimestamp time.
 }
 
 // The Manager manages recording and alerting rules.
+// INFO: 规则相关操作的入口(告警规则管理器)
 type Manager struct {
 	opts     *ManagerOptions
-	groups   map[string]*Group
-	mtx      sync.RWMutex
-	block    chan struct{}
-	done     chan struct{}
-	restored bool
+	groups   map[string]*Group // INFO: 规则组对象的map
+	mtx      sync.RWMutex      // INFO: 读写互斥锁
+	block    chan struct{}     // INFO: 用于Manager告知各Group可以进行规则的评估了
+	done     chan struct{}     // INFO: 用于告知规则评估已经停止
+	restored bool              // INFO: 表示是否已经恢复过告警状态
 
 	logger log.Logger
 }
@@ -103,12 +104,13 @@ type Manager struct {
 type NotifyFunc func(ctx context.Context, expr string, alerts ...*Alert)
 
 // ManagerOptions bundles options for the Manager.
+// INFO: 告警规则管理器的相关选项
 type ManagerOptions struct {
 	ExternalURL               *url.URL
 	QueryFunc                 QueryFunc
 	NotifyFunc                NotifyFunc
 	Context                   context.Context
-	Appendable                storage.Appendable
+	Appendable                storage.Appendable // INFO: 该对象可以创建Appender对象,该对象可以往存储中append数据
 	Queryable                 storage.Queryable
 	Logger                    log.Logger
 	Registerer                prometheus.Registerer
@@ -159,6 +161,7 @@ func NewManager(o *ManagerOptions) *Manager {
 }
 
 // Run starts processing of the rule manager. It is blocking.
+// INFO: 开始运行规则评估,该方法会阻塞直到评估被停止
 func (m *Manager) Run() {
 	level.Info(m.logger).Log("msg", "Starting rule manager...")
 	m.start()
@@ -166,10 +169,12 @@ func (m *Manager) Run() {
 }
 
 func (m *Manager) start() {
+	// INFO: 这里所谓的开始其实是关闭block通道,因为规则组的评估时被这个block通道所阻塞的
 	close(m.block)
 }
 
 // Stop the rule manager's rule evaluation cycles.
+// INFO: 停止规则评估
 func (m *Manager) Stop() {
 	m.mtx.Lock()
 	defer m.mtx.Unlock()
@@ -182,6 +187,7 @@ func (m *Manager) Stop() {
 
 	// Shut down the groups waiting multiple evaluation intervals to write
 	// staleness markers.
+	// INFO: 关闭done通道,让Run函数返回
 	close(m.done)
 
 	level.Info(m.logger).Log("msg", "Rule manager stopped")
@@ -189,18 +195,25 @@ func (m *Manager) Stop() {
 
 // Update the rule manager's state as the config requires. If
 // loading the new rules failed the old rule set is restored.
+// INFO: 按配置更新规则管理器的状态,如果读取新的规则失败,那么老的规则将会被保留
 func (m *Manager) Update(interval time.Duration, files []string, externalLabels labels.Labels, externalURL string, groupEvalIterationFunc GroupEvalIterationFunc) error {
+	// INFO: 按配置更新规则管理器的状态,如果读取新的规则失败,那么老的规则将会被保留
 	m.mtx.Lock()
+	// INFO: 按配置更新规则管理器的状态,如果读取新的规则失败,那么老的规则将会被保留
 	defer m.mtx.Unlock()
 
+	// INFO: 获取规则组的map
 	groups, errs := m.LoadGroups(interval, externalLabels, externalURL, groupEvalIterationFunc, files...)
 
+	// INFO: 如读取配置文件错误,则直接返回,不影响目前正常的规则
 	if errs != nil {
 		for _, e := range errs {
 			level.Error(m.logger).Log("msg", "loading groups failed", "err", e)
 		}
 		return errors.New("error loading rules, previous rule set restored")
 	}
+	// INFO: 由于在上面的m.LoadGroups中已经设置了规则组级别的restored状态
+	// 所以这里把规则管理器级别的restored设置为true
 	m.restored = true
 
 	var wg sync.WaitGroup
@@ -211,33 +224,45 @@ func (m *Manager) Update(interval time.Duration, files []string, externalLabels 
 		// Then copy it into the new group.
 		gn := GroupKey(newg.file, newg.name)
 		oldg, ok := m.groups[gn]
+		// INFO: 不管如何,从老组中删除新组的id,因为:
+		// 1 上面一行代码已经将老的对象保存了,groups保存的是指针,所以删除指针并不会删除指针指向的对象
+		// 2 最后会遍历m.groups停止所有老的协程
 		delete(m.groups, gn)
 
+		// INFO: 如老组和新组的id相同(即规则文件名和组名相同),且两个组对象相等
 		if ok && oldg.Equals(newg) {
+			// IMPT: 将新组map中的新Group对象替换为老的Group对象,因为两个规则组相等,所以不需要进行任何操作
 			groups[gn] = oldg
 			continue
 		}
 
 		wg.Add(1)
+		// INFO: 以规则组为单位启动协程,即一个规则组会有一个协程用于评估
 		go func(newg *Group) {
+			// INFO: 如果新组其实是老组的更新,则停止老组,并拷贝状态到新组
 			if ok {
-				oldg.stop()
-				newg.CopyState(oldg)
+				oldg.stop() // INFO: 停止老Group的告警规则评估(即停止评估的协程)
+				// TODO: 待看完具体评估的逻辑后再看这个拷贝逻辑
+				newg.CopyState(oldg) // INFO: 拷贝状态
 			}
+			// INFO: 停止老Group的评估及拷贝后,完成等待组
 			wg.Done()
 			// Wait with starting evaluation until the rule manager
 			// is told to run. This is necessary to avoid running
 			// queries against a bootstrapping storage.
+			// INFO: 这里会阻塞,直到告警管理器告知可以进行告警规则的评估了
 			<-m.block
+			// INFO: 启动告警规则组的评估
 			newg.run(m.opts.Context)
 		}(newg)
 	}
 
 	// Stop remaining old groups.
+	// INFO: 停止那些在新的配置中已经不存在的规则组
 	wg.Add(len(m.groups))
 	for n, oldg := range m.groups {
 		go func(n string, g *Group) {
-			g.markStale = true
+			g.markStale = true // INFO: 标记为腐败
 			g.stop()
 			if m := g.metrics; m != nil {
 				m.IterationsMissed.DeleteLabelValues(n)
@@ -250,17 +275,18 @@ func (m *Manager) Update(interval time.Duration, files []string, externalLabels 
 				m.GroupRules.DeleteLabelValues(n)
 				m.GroupSamples.DeleteLabelValues((n))
 			}
-			wg.Done()
+			wg.Done() // INFO: 停止完成后告知等待组
 		}(n, oldg)
 	}
 
-	wg.Wait()
-	m.groups = groups
+	wg.Wait()         // INFO: 在停止完老的规则组和拷贝状态后,即可返回,注意这里新的规则组可能还未开始评估,因为这个需要规则管理器告知才能开始
+	m.groups = groups // INFO: 将新的规则组赋值给规则管理器
 
 	return nil
 }
 
 // GroupLoader is responsible for loading rule groups from arbitrary sources and parsing them.
+// INFO: 规则组读取器接口
 type GroupLoader interface {
 	Load(identifier string) (*rulefmt.RuleGroups, []error)
 	Parse(query string) (parser.Expr, error)
@@ -268,6 +294,7 @@ type GroupLoader interface {
 
 // FileLoader is the default GroupLoader implementation. It defers to rulefmt.ParseFile
 // and parser.ParseExpr.
+// INFO: 规则组读取器的实现
 type FileLoader struct{}
 
 func (FileLoader) Load(identifier string) (*rulefmt.RuleGroups, []error) {
@@ -277,13 +304,17 @@ func (FileLoader) Load(identifier string) (*rulefmt.RuleGroups, []error) {
 func (FileLoader) Parse(query string) (parser.Expr, error) { return parser.ParseExpr(query) }
 
 // LoadGroups reads groups from a list of files.
+// INFO: 将多个规则配置文件转换为统一的value为Group对象的map
+// interval参数是全局的评估间隔配置
 func (m *Manager) LoadGroups(
 	interval time.Duration, externalLabels labels.Labels, externalURL string, groupEvalIterationFunc GroupEvalIterationFunc, filenames ...string,
 ) (map[string]*Group, []error) {
 	groups := make(map[string]*Group)
 
+	// INFO: 是否需要恢复告警状态(在普米启动时m.restored为默认的false,所以需要restore,但是reload时,则不需要)
 	shouldRestore := !m.restored
 
+	// INFO: 遍历每一个规则配置文件
 	for _, fn := range filenames {
 		rgs, errs := m.opts.GroupLoader.Load(fn)
 		if errs != nil {
@@ -291,6 +322,7 @@ func (m *Manager) LoadGroups(
 		}
 
 		for _, rg := range rgs.Groups {
+			// INFO: 如果规则组有评估间隔配置则使用,没有则使用全局配置
 			itv := interval
 			if rg.Interval != 0 {
 				itv = time.Duration(rg.Interval)
@@ -303,6 +335,8 @@ func (m *Manager) LoadGroups(
 					return nil, []error{fmt.Errorf("%s: %w", fn, err)}
 				}
 
+				// INFO: 判断规则是recording rule还是alerting rule
+				// 如果规则中有alert配置项,则认为是alerting rule,否则认为是recording rule
 				if r.Alert.Value != "" {
 					rules = append(rules, NewAlertingRule(
 						r.Alert.Value,
@@ -313,6 +347,7 @@ func (m *Manager) LoadGroups(
 						labels.FromMap(r.Annotations),
 						externalLabels,
 						externalURL,
+						// INFO: 设置告警规则级别的restore
 						m.restored,
 						log.With(m.logger, "alert", r.Alert),
 					))
@@ -328,6 +363,7 @@ func (m *Manager) LoadGroups(
 			// Check dependencies between rules and store it on the Rule itself.
 			m.opts.RuleDependencyController.AnalyseRules(rules)
 
+			// INFO: key是规则文件名+组名的格式
 			groups[GroupKey(fn, rg.Name)] = NewGroup(GroupOptions{
 				Name:              rg.Name,
 				File:              fn,

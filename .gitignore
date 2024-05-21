@@ -36,5 +36,6 @@ y.output
 .vscode
 .hypothesis
 prometheus.code-workspace
+/o11y_stack
 # debug时生成的临时bin文件
 __debug_bin*

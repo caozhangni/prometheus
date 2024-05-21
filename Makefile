@@ -173,3 +173,25 @@ update-all-go-deps:
 		$(GO) get -d $$m; \
 	done
 	@cd ./documentation/examples/remote_storage/ && $(GO) mod tidy
+
+# INFO: 我自己的 #
+
+# 指标采集器
+.PHONY: node_exporter
+node_exporter:
+	/opt/homebrew/opt/node_exporter/bin/node_exporter_brew_services
+
+# 日志采集器
+.PHONY: promtail
+promtail:
+	/opt/homebrew/opt/promtail/bin/promtail -config.file\=o11y_stack/promtail/promtail-local-config.yaml
+
+# grafana企业版(监听端口未3001,账号admin)
+.PHONY: grafana_enterprise
+grafana_enterprise:
+	cd ./o11y_stack/grafana_enterprise/grafana-v11.0.0 && ./bin/grafana server
+
+# grafana开源版(监听端口未3002,账号admin)
+.PHONY: grafana_oss
+grafana_oss:
+	cd ./o11y_stack/grafana_oss/grafana-v11.0.0 && ./bin/grafana server

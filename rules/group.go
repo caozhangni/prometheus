@@ -43,30 +43,33 @@ import (
 )
 
 // Group is a set of rules that have a logical relation.
+// INFO: 组表示有逻辑关系的规则的集合
 type Group struct {
-	name                 string
-	file                 string
+	name                 string // INFO: 规则组的名称
+	file                 string // INFO: 规则组的配置文件及路径
 	interval             time.Duration
 	limit                int
-	rules                []Rule
+	rules                []Rule                     // INFO: 规则对象集合
 	seriesInPreviousEval []map[string]labels.Labels // One per Rule.
 	staleSeries          []labels.Labels
-	opts                 *ManagerOptions
+	opts                 *ManagerOptions // INFO: 规则组管理器选项
 	mtx                  sync.Mutex
-	evaluationTime       time.Duration
-	lastEvaluation       time.Time // Wall-clock time of most recent evaluation.
-	lastEvalTimestamp    time.Time // Time slot used for most recent evaluation.
+	// INFO: 最近一次评估的持续时间
+	evaluationTime time.Duration
+	// INFO: 最近一次评估的时间点
+	lastEvaluation    time.Time // Wall-clock time of most recent evaluation.
+	lastEvalTimestamp time.Time // Time slot used for most recent evaluation.
 
-	shouldRestore bool
+	shouldRestore bool // INFO: 是否需要恢复告警的状态
 
-	markStale   bool
-	done        chan struct{}
-	terminated  chan struct{}
+	markStale   bool          // INFO: 表示当前规则组是否已经腐败
+	done        chan struct{} // INFO: 用于告知Group需要停止告警规则的评估
+	terminated  chan struct{} // INFO: 表示告警规则评估已停止
 	managerDone chan struct{}
 
 	logger log.Logger
 
-	metrics *Metrics
+	metrics *Metrics // INFO: 告警规则组自身的监控指标
 
 	// Rule group evaluation iteration function,
 	// defaults to DefaultEvalIterationFunc.
@@ -83,6 +86,7 @@ type Group struct {
 // DefaultEvalIterationFunc is the default implementation.
 type GroupEvalIterationFunc func(ctx context.Context, g *Group, evalTimestamp time.Time)
 
+// INFO: 组级别告警规则选项
 type GroupOptions struct {
 	Name, File        string
 	Interval          time.Duration
@@ -164,17 +168,21 @@ func (g *Group) Limit() int { return g.limit }
 
 func (g *Group) Logger() log.Logger { return g.logger }
 
+// INFO: 进行规则组的评估
 func (g *Group) run(ctx context.Context) {
-	defer close(g.terminated)
+	defer close(g.terminated) // INFO: 当前方法返回了则说明评估已经停止成功了
 
 	// Wait an initial amount to have consistently slotted intervals.
+	// INFO: 确保普米多实例之间,相同规则组的下一次的评估时间是一致的(即"校准"多个实例之间的评估时间差)
+	// 因为有些场景为了高可用,会启动两个一模一样的普米抓取一模一样的数据,如果过评估时间不一致,会造成麻烦
 	evalTimestamp := g.EvalTimestamp(time.Now().UnixNano()).Add(g.interval)
 	select {
-	case <-time.After(time.Until(evalTimestamp)):
-	case <-g.done:
+	case <-time.After(time.Until(evalTimestamp)): // INFO: 等待到评估的时间点
+	case <-g.done: // INFO: 可能会收到停止规则评估的通知
 		return
 	}
 
+	// TODO: 这里不太理解为什么要使用promql的上下文
 	ctx = promql.NewOriginContext(ctx, map[string]interface{}{
 		"ruleGroup": map[string]string{
 			"file": g.File(),
@@ -185,9 +193,12 @@ func (g *Group) run(ctx context.Context) {
 	// The assumption here is that since the ticker was started after having
 	// waited for `evalTimestamp` to pass, the ticks will trigger soon
 	// after each `evalTimestamp + N * g.interval` occurrence.
+	// INFO: 用于下一次评估的计时器
 	tick := time.NewTicker(g.interval)
+	// INFO: 延迟调用,方法return时停止定时器
 	defer tick.Stop()
 
+	// TODO: 延迟调用,还需要看下里面的逻辑
 	defer func() {
 		if !g.markStale {
 			return
@@ -211,7 +222,11 @@ func (g *Group) run(ctx context.Context) {
 		}(time.Now())
 	}()
 
-	g.evalIterationFunc(ctx, g, evalTimestamp)
+	g.evalIterationFunc(ctx, g, evalTimestamp) // INFO: 先进行一次告警规则的评估
+	// IMPT: 当普米启动时,需要恢复告警的状态,reload时则不需要
+	// 这个恢复的动作需要在第一次评估之后,这是因为在第一次评估的时候,
+	// 可能没有足够的抓取数据,记录规则可能还没有更新最近的值(因为告警规则可能会依赖于记录规则的一些指标)
+	// TODO: 这个逻辑要等看完评估逻辑后再看下
 	if g.shouldRestore {
 		// If we have to restore, we wait for another Eval to finish.
 		// The reason behind this is, during first eval (or before it)
@@ -221,16 +236,20 @@ func (g *Group) run(ctx context.Context) {
 		case <-g.done:
 			return
 		case <-tick.C:
+			// INFO: 考虑到评估用时可能超过了评估间隔
 			missed := (time.Since(evalTimestamp) / g.interval) - 1
+			// INFO: 先记录到自身的监控指标
 			if missed > 0 {
 				g.metrics.IterationsMissed.WithLabelValues(GroupKey(g.file, g.name)).Add(float64(missed))
 				g.metrics.IterationsScheduled.WithLabelValues(GroupKey(g.file, g.name)).Add(float64(missed))
 			}
+			// INFO: 按照实际的评估用时校准评估的时间戳
 			evalTimestamp = evalTimestamp.Add((missed + 1) * g.interval)
 			g.evalIterationFunc(ctx, g, evalTimestamp)
 		}
 
 		restoreStartTime := time.Now()
+		// INFO: 进行告警状态的恢复
 		g.RestoreForState(restoreStartTime)
 		totalRestoreTimeSeconds := time.Since(restoreStartTime).Seconds()
 		g.metrics.GroupLastRestoreDuration.WithLabelValues(GroupKey(g.file, g.name)).Set(totalRestoreTimeSeconds)
@@ -238,20 +257,24 @@ func (g *Group) run(ctx context.Context) {
 		g.shouldRestore = false
 	}
 
+	// INFO: 死循环用于根据计时器进行周期性的评估
 	for {
 		select {
-		case <-g.done:
+		case <-g.done: // INFO: 监听是否需要停止告警评估
 			return
 		default:
 			select {
 			case <-g.done:
 				return
 			case <-tick.C:
+				// INFO: 考虑到评估用时可能超过了评估间隔
 				missed := (time.Since(evalTimestamp) / g.interval) - 1
+				// INFO: 先记录到自身的监控指标
 				if missed > 0 {
 					g.metrics.IterationsMissed.WithLabelValues(GroupKey(g.file, g.name)).Add(float64(missed))
 					g.metrics.IterationsScheduled.WithLabelValues(GroupKey(g.file, g.name)).Add(float64(missed))
 				}
+				// INFO: 按照实际的评估用时校准评估的时间戳
 				evalTimestamp = evalTimestamp.Add((missed + 1) * g.interval)
 
 				g.evalIterationFunc(ctx, g, evalTimestamp)
@@ -260,12 +283,14 @@ func (g *Group) run(ctx context.Context) {
 	}
 }
 
+// INFO: 停止规则组的评估
 func (g *Group) stop() {
 	close(g.done)
 	<-g.terminated
 }
 
 func (g *Group) hash() uint64 {
+	// INFO: 通过告警规则组的名称和文件路径计算哈希,保证如果过是多个普米实例,只要配置相同,则其哈希是一致的
 	l := labels.New(
 		labels.Label{Name: "name", Value: g.name},
 		labels.Label{Name: "file", Value: g.file},
@@ -314,6 +339,7 @@ func (g *Group) GetEvaluationTime() time.Duration {
 }
 
 // setEvaluationTime sets the time in seconds the last evaluation took.
+// INFO: 设置最近一次评估的持续时间
 func (g *Group) setEvaluationTime(dur time.Duration) {
 	g.metrics.GroupLastDuration.WithLabelValues(GroupKey(g.file, g.name)).Set(dur.Seconds())
 
@@ -330,6 +356,7 @@ func (g *Group) GetLastEvaluation() time.Time {
 }
 
 // setLastEvaluation updates evaluationTimestamp to the timestamp of when the rule group was last evaluated.
+// INFO: 设置最近一次评估的时间点
 func (g *Group) setLastEvaluation(ts time.Time) {
 	g.metrics.GroupLastEvalTime.WithLabelValues(GroupKey(g.file, g.name)).Set(float64(ts.UnixNano()) / 1e9)
 
@@ -353,9 +380,10 @@ func (g *Group) setLastEvalTimestamp(ts time.Time) {
 }
 
 // EvalTimestamp returns the immediately preceding consistently slotted evaluation time.
+// INFO: 确保多普米实例之间,其拿到的评估时间是一致的(即校准多个实例之间的时间差)
 func (g *Group) EvalTimestamp(startTime int64) time.Time {
 	var (
-		offset = int64(g.hash() % uint64(g.interval))
+		offset = int64(g.hash() % uint64(g.interval)) // INFO: 对interval取余,根据余数的性质,这里的offset是肯定小于interval
 
 		// This group's evaluation times differ from the perfect time intervals by `offset` nanoseconds.
 		// But we can only use `% interval` to align with the interval. And `% interval` will always
@@ -386,12 +414,17 @@ func nameAndLabels(rule Rule) string {
 //
 // Rules are matched based on their name and labels. If there are duplicates, the
 // first is matched with the first, second with the second etc.
+// INFO: 从一个组拷贝状态
+// IMPT: 规则会基于名称和labels进行匹配,如果有重复,那么第一个将会匹配第一个,第二个将会匹配第二个
 func (g *Group) CopyState(from *Group) {
+	// INFO: 先拷贝时间相关
 	g.evaluationTime = from.evaluationTime
 	g.lastEvaluation = from.lastEvaluation
 
+	// INFO: 因为有可能重复,所以这个map的value是一个切片
 	ruleMap := make(map[string][]int, len(from.rules))
 
+	// INFO: 将from规则转换为一个map,key为规则的name+labels的字符串
 	for fi, fromRule := range from.rules {
 		nameAndLabels := nameAndLabels(fromRule)
 		l := ruleMap[nameAndLabels]
@@ -401,17 +434,21 @@ func (g *Group) CopyState(from *Group) {
 	for i, rule := range g.rules {
 		nameAndLabels := nameAndLabels(rule)
 		indexes := ruleMap[nameAndLabels]
+		// INFO: 没有匹配到,则直接跳过
 		if len(indexes) == 0 {
 			continue
 		}
 		fi := indexes[0]
+		// TODO: 待看过评估的具体逻辑后再看这个是什么意思
 		g.seriesInPreviousEval[i] = from.seriesInPreviousEval[fi]
 		ruleMap[nameAndLabels] = indexes[1:]
 
+		// INFO: 新规则不是告警类型,则直接跳过
 		ar, ok := rule.(*AlertingRule)
 		if !ok {
 			continue
 		}
+		// INFO: from规则不是告警类型,则直接跳过
 		far, ok := from.rules[fi].(*AlertingRule)
 		if !ok {
 			continue
@@ -437,16 +474,19 @@ func (g *Group) CopyState(from *Group) {
 
 // Eval runs a single evaluation cycle in which all rules are evaluated sequentially.
 // Rules can be evaluated concurrently if the `concurrent-rule-eval` feature flag is enabled.
+// INFO: 按顺序对规则组进行评估
 func (g *Group) Eval(ctx context.Context, ts time.Time) {
 	var (
 		samplesTotal atomic.Float64
 		wg           sync.WaitGroup
 	)
 
+	// INFO: 遍历每个规则对象进行评估
 	for i, rule := range g.rules {
 		select {
 		case <-g.done:
 			return
+			// INFO: 通常g.done管道都是空的,所以会跑到default这边来,而不是阻塞
 		default:
 		}
 
@@ -456,6 +496,7 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 			}
 
 			logger := log.WithPrefix(g.logger, "name", rule.Name(), "index", i)
+			// INFO: 设置OpenTelemetry的相关tracing数据
 			ctx, sp := otel.Tracer("").Start(ctx, "rule")
 			sp.SetAttributes(attribute.String("name", rule.Name()))
 			defer func(t time.Time) {
@@ -473,6 +514,7 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 
 			g.metrics.EvalTotal.WithLabelValues(GroupKey(g.File(), g.Name())).Inc()
 
+			// INFO: 进行单条规则的评估(注意既可能是recording rule也可能是alerting rule)
 			vector, err := rule.Eval(ctx, ts, g.opts.QueryFunc, g.opts.ExternalURL, g.Limit())
 			if err != nil {
 				rule.SetHealth(HealthBad)
@@ -758,27 +800,34 @@ func (g *Group) RestoreForState(ts time.Time) {
 }
 
 // Equals return if two groups are the same.
+// INFO: 判断两个规则组是否相等
 func (g *Group) Equals(ng *Group) bool {
+	// INFO: 判断组名
 	if g.name != ng.name {
 		return false
 	}
 
+	// INFO: 判断组配置文件
 	if g.file != ng.file {
 		return false
 	}
 
+	// INFO: 判断评估间隔
 	if g.interval != ng.interval {
 		return false
 	}
 
+	// INFO:判断limit参数
 	if g.limit != ng.limit {
 		return false
 	}
 
+	// INFO: 判断规则数量
 	if len(g.rules) != len(ng.rules) {
 		return false
 	}
 
+	// INFO: 判断规则是否相同
 	for i, gr := range g.rules {
 		if gr.String() != ng.rules[i].String() {
 			return false
@@ -789,6 +838,7 @@ func (g *Group) Equals(ng *Group) bool {
 }
 
 // GroupKey group names need not be unique across filenames.
+// INFO: 生成规则组的key
 func GroupKey(file, name string) string {
 	return file + ";" + name
 }

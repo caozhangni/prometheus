@@ -117,6 +117,7 @@ func (rule *RecordingRule) Eval(ctx context.Context, ts time.Time, query QueryFu
 	return vector, nil
 }
 
+// INFO: 以yaml序列化后的格式(字节切片的字符串表示)作为记录规则的字符串表示
 func (rule *RecordingRule) String() string {
 	r := rulefmt.Rule{
 		Record: rule.name,

@@ -807,6 +807,7 @@ func main() {
 		// INFO: 创建查询引擎对象
 		queryEngine = promql.NewEngine(opts)
 
+		// INFO: 创建规则管理器
 		ruleManager = rules.NewManager(&rules.ManagerOptions{
 			Appendable:             fanoutStorage,
 			Queryable:              localStorage,
@@ -1261,6 +1262,7 @@ func main() {
 						return errors.New("flag 'storage.agent.wal-segment-size' must be set between 10MB and 256MB")
 					}
 				}
+				// INFO: 使用TSDB agent下的DB,DB只实现了WAL的能力
 				db, err := agent.Open(
 					logger,
 					prometheus.DefaultRegisterer,
@@ -1289,7 +1291,9 @@ func main() {
 					"MaxWALTime", cfg.agent.MaxWALTime,
 				)
 
+				// IMPT: 代理模式下,设置本地存储为TSDB agent下的DB
 				localStorage.Set(db, 0)
+				// INFO: 关闭此通道,告知数据库已经打开
 				db.SetWriteNotified(remoteStorage)
 				close(dbOpen)
 				<-cancel
@@ -1339,6 +1343,7 @@ func main() {
 			},
 		)
 	}
+	// IMPT: 启动各个协程
 	if err := g.Run(); err != nil {
 		level.Error(logger).Log("err", err)
 		os.Exit(1)
@@ -1346,6 +1351,7 @@ func main() {
 	level.Info(logger).Log("msg", "See you next time!")
 }
 
+// INFO: 打开TSDB并返回一个数据库实例对象
 func openDBWithMetrics(dir string, logger log.Logger, reg prometheus.Registerer, opts *tsdb.Options, stats *tsdb.DBStats) (*tsdb.DB, error) {
 	db, err := tsdb.Open(
 		dir,
@@ -1402,6 +1408,7 @@ type reloader struct {
 	reloader func(*config.Config) error
 }
 
+// INFO: reload配置
 func reloadConfig(filename string, expandExternalLabels, enableExemplarStorage bool, logger log.Logger, noStepSuqueryInterval *safePromQLNoStepSubqueryInterval, rls ...reloader) (err error) {
 	start := time.Now()
 	timings := []interface{}{}
@@ -1495,6 +1502,7 @@ func computeExternalURL(u, listenAddr string) (*url.URL, error) {
 
 // readyStorage implements the Storage interface while allowing to set the actual
 // storage at a later point in time.
+// INFO: 用于指定存储的实现方式
 type readyStorage struct {
 	mtx             sync.RWMutex
 	db              storage.Storage
@@ -1511,6 +1519,7 @@ func (s *readyStorage) ApplyConfig(conf *config.Config) error {
 }
 
 // Set the storage.
+// INFO: 设置存储的具体实现
 func (s *readyStorage) Set(db storage.Storage, startTimeMargin int64) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
@@ -1771,6 +1780,7 @@ func (opts tsdbOptions) ToTSDBOptions() tsdb.Options {
 
 // agentOptions is a version of agent.Options with defined units. This is required
 // as agent.Option fields are unit agnostic (time).
+// INFO: agent模式下的命令行选项
 type agentOptions struct {
 	WALSegmentSize         units.Base2Bytes
 	WALCompression         bool

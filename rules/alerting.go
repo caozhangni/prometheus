@@ -49,6 +49,7 @@ const (
 // AlertState denotes the state of an active alert.
 type AlertState int
 
+// INFO: 告警状态的枚举
 const (
 	// StateInactive is the state of an alert that is neither firing nor pending.
 	StateInactive AlertState = iota
@@ -73,6 +74,7 @@ func (s AlertState) String() string {
 }
 
 // Alert is the user-level representation of a single instance of an alerting rule.
+// INFO: 表示某个告警规则下的一个具体的告警对象
 type Alert struct {
 	State AlertState
 
@@ -105,10 +107,13 @@ func (a *Alert) needsSending(ts time.Time, resendDelay time.Duration) bool {
 }
 
 // An AlertingRule generates alerts from its vector expression.
+// INFO: 表示一条告警的规则
 type AlertingRule struct {
 	// The name of the alert.
+	// INFO: 告警的名称
 	name string
 	// The vector expression from which to generate alerts.
+	// INFO: 用于生成告警的向量表达式
 	vector parser.Expr
 	// The duration for which a labelset needs to persist in the expression
 	// output vector before an alert transitions from Pending to Firing state.
@@ -126,6 +131,10 @@ type AlertingRule struct {
 	externalURL string
 	// true if old state has been restored. We start persisting samples for ALERT_FOR_STATE
 	// only after the restoration.
+	// INFO: 如果老的状态已经被恢复(即已经从存储加载回内存中),那么值为true
+	// 只有在告警规则的状态已经成功恢复之后，Prometheus才开始持久化用于ALERT_FOR_STATE状态的样本
+	// 这是为了保证ALERT_FOR_STATE的持久化状态与恢复的告警规则状态保持一致
+	// ALERT_FOR_STATE是一个特殊的状态，表示一个告警规则已经满足了告警规则(但可能还未真正发出去)，并且这个告警正在持续的时间段
 	restored *atomic.Bool
 	// Time in seconds taken to evaluate rule.
 	evaluationDuration *atomic.Duration
@@ -139,6 +148,7 @@ type AlertingRule struct {
 	activeMtx sync.Mutex
 	// A map of alerts which are currently active (Pending or Firing), keyed by
 	// the fingerprint of the labelset they correspond to.
+	// INFO: 用于保存该告警规则下的Pending或者Firing的告警,key为告警标签集合的fingerprint
 	active map[uint64]*Alert
 
 	logger log.Logger
@@ -338,6 +348,7 @@ const resolvedRetention = 15 * time.Minute
 
 // Eval evaluates the rule expression and then creates pending alerts and fires
 // or removes previously pending alerts accordingly.
+// INFO: 对告警规则进行评估
 func (r *AlertingRule) Eval(ctx context.Context, ts time.Time, query QueryFunc, externalURL *url.URL, limit int) (promql.Vector, error) {
 	ctx = NewOriginContext(ctx, NewRuleDetail(r))
 
@@ -578,6 +589,7 @@ func (r *AlertingRule) sendAlerts(ctx context.Context, ts time.Time, resendDelay
 	notifyFunc(ctx, r.vector.String(), alerts...)
 }
 
+// INFO: 以yaml序列化后的格式(字节切片的字符串表示)作为告警规则的字符串表示
 func (r *AlertingRule) String() string {
 	ar := rulefmt.Rule{
 		Alert:         r.name,

@@ -35,6 +35,7 @@ const (
 
 // A Rule encapsulates a vector expression which is evaluated at a specified
 // interval and acted upon (currently either recorded or used for alerting).
+// INFO: 表示一个规则对象
 type Rule interface {
 	Name() string
 	// Labels of the rule.
@@ -42,6 +43,7 @@ type Rule interface {
 	// Eval evaluates the rule, including any associated recording or alerting actions.
 	Eval(context.Context, time.Time, QueryFunc, *url.URL, int) (promql.Vector, error)
 	// String returns a human-readable string representation of the rule.
+	// INFO: 返回规则的字符串表示
 	String() string
 	// Query returns the rule query expression.
 	Query() parser.Expr
