@@ -195,3 +195,8 @@ grafana_enterprise:
 .PHONY: grafana_oss
 grafana_oss:
 	cd ./o11y_stack/grafana_oss/grafana-v11.0.0 && ./bin/grafana server
+
+# 启动前端服务(启动前端服务，不知道为什么新版的普米启动会报错，所以用的老的普米)
+.PHONY: fronted
+fronted:
+	cd ../prometheus/web/ui && npm start

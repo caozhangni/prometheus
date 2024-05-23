@@ -864,6 +864,7 @@ func main() {
 	}
 
 	// Depends on cfg.web.ScrapeManager so needs to be after cfg.web.ScrapeManager = scrapeManager.
+	// INFO: 创建web服务器对象
 	webHandler := web.New(log.With(logger, "component", "web"), &cfg.web)
 
 	// Monitor outgoing connections on default transport with conntrack.
@@ -995,6 +996,7 @@ func main() {
 		})
 	}
 
+	//
 	listener, err := webHandler.Listener()
 	if err != nil {
 		level.Error(logger).Log("msg", "Unable to start web listener", "err", err)
