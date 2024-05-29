@@ -27,6 +27,8 @@ import (
 )
 
 // Assets contains the project's assets.
+// INFO: 获取前端的资产对象(静态文件)
+// INFO: 注意这个匿名函数是在初始化时就执行了的
 var Assets = func() http.FileSystem {
 	wd, err := os.Getwd()
 	if err != nil {

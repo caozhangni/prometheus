@@ -56,17 +56,21 @@ import (
 	"github.com/prometheus/prometheus/util/stats"
 )
 
+// INFO: 定义http接口响应的状态为字符串的衍生类型
 type status string
 
 const (
+	// INFO: 成功状态的枚举
 	statusSuccess status = "success"
-	statusError   status = "error"
+	// INFO: 错误状态的枚举
+	statusError status = "error"
 
 	// Non-standard status code (originally introduced by nginx) for the case when a client closes
 	// the connection while the server is still processing the request.
 	statusClientClosedConnection = 499
 )
 
+// INFO: 定义http接口响应的错误类型为字符串的衍生类型
 type errorType string
 
 const (
@@ -153,6 +157,7 @@ type RuntimeInfo struct {
 }
 
 // Response contains a response to a HTTP API request.
+// IMPT: http接口调用返回的统一结构体
 type Response struct {
 	Status    status      `json:"status"`
 	Data      interface{} `json:"data,omitempty"`
@@ -161,6 +166,10 @@ type Response struct {
 	Warnings  []string    `json:"warnings,omitempty"`
 }
 
+// IMPT: http处理函数和具体http响应结果(上面的Response对象)之间的抽象层
+// TODO: 为什么会有这个抽象而不是直接使用Response，我不是太明白
+// TODO: 我猜测是不希望各个http处理函数去处理Response对象的结构，因为这个结构可能会有所变化??
+// TODO: 比如，agent模式下某些不可用的接口可以直接返回特定的内容
 type apiFuncResult struct {
 	data      interface{}
 	err       *apiError
@@ -186,6 +195,9 @@ type QueryOpts interface {
 
 // API can register a set of endpoints in a router and handle
 // them using the provided storage and query engine.
+// INFO: api v1的manager对象
+// INFO: 一类api接口(这里指v1的接口)和其依赖模块(如查询引擎)的集合
+// INFO: API对象用于将端点的集合注册到路由中，并且使用提供的存储和查询引擎
 type API struct {
 	Queryable         storage.SampleAndChunkQueryable
 	QueryEngine       promql.QueryEngine
@@ -201,14 +213,15 @@ type API struct {
 	ready                 func(http.HandlerFunc) http.HandlerFunc
 	globalURLOptions      GlobalURLOptions
 
-	db            TSDBAdminStats
-	dbDir         string
-	enableAdmin   bool
-	logger        log.Logger
-	CORSOrigin    *regexp.Regexp
-	buildInfo     *PrometheusVersion
-	runtimeInfo   func() (RuntimeInfo, error)
-	gatherer      prometheus.Gatherer
+	db          TSDBAdminStats
+	dbDir       string
+	enableAdmin bool
+	logger      log.Logger
+	CORSOrigin  *regexp.Regexp
+	buildInfo   *PrometheusVersion
+	runtimeInfo func() (RuntimeInfo, error)
+	gatherer    prometheus.Gatherer
+	// INFO: API对象是否是代理模式下的
 	isAgent       bool
 	statsRenderer StatsRenderer
 
@@ -319,7 +332,9 @@ func setUnavailStatusOnTSDBNotReady(r apiFuncResult) apiFuncResult {
 }
 
 // Register the API's endpoints in the given router.
+// INFO: 注册API对象的端点到r
 func (api *API) Register(r *route.Router) {
+	// IMPT: 封装apiFunc为http的处理函数
 	wrap := func(f apiFunc) http.HandlerFunc {
 		hf := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			httputil.SetCORS(w, api.CORSOrigin, r)
@@ -343,6 +358,7 @@ func (api *API) Register(r *route.Router) {
 		}.ServeHTTP)
 	}
 
+	// INFO: 对于非agent模式，某些不可用的接口返回相同的内容
 	wrapAgent := func(f apiFunc) http.HandlerFunc {
 		return wrap(func(r *http.Request) apiFuncResult {
 			if api.isAgent {
@@ -390,6 +406,7 @@ func (api *API) Register(r *route.Router) {
 	r.Post("/otlp/v1/metrics", api.ready(api.otlpWrite))
 
 	r.Get("/alerts", wrapAgent(api.alerts))
+	// INFO: 规则相关
 	r.Get("/rules", wrapAgent(api.rules))
 
 	// Admin APIs
@@ -1378,6 +1395,7 @@ type RecordingRule struct {
 	Type string `json:"type"`
 }
 
+// INFO: 规则接口处理函数
 func (api *API) rules(r *http.Request) apiFuncResult {
 	if err := r.ParseForm(); err != nil {
 		return apiFuncResult{nil, &apiError{errorBadData, fmt.Errorf("error parsing form values: %w", err)}, nil, nil}

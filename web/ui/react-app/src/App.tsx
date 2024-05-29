@@ -87,6 +87,7 @@ const App: FC<AppProps> = ({ consolesLink, agentMode, ready }) => {
               NOTE: Any route added here needs to also be added to the list of
               React-handled router paths ("reactRouterPaths") in /web/web.go.
             */}
+            {/* IMPT: 前端路由 */}
                   <Route path="/agent">
                     <AgentPage />
                   </Route>

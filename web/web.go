@@ -43,6 +43,8 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	io_prometheus_client "github.com/prometheus/client_model/go"
+
+	// INFO: common是普米各组件间共享的类库
 	"github.com/prometheus/common/model"
 	"github.com/prometheus/common/route"
 	"github.com/prometheus/common/server"
@@ -64,6 +66,7 @@ import (
 )
 
 // Paths that are handled by the React / Reach router that should all be served the main React app's index.html.
+// INFO: 前端占用的路由(Server和Agent模式下公用)
 var reactRouterPaths = []string{
 	"/config",
 	"/flags",
@@ -74,11 +77,13 @@ var reactRouterPaths = []string{
 }
 
 // Paths that are handled by the React router when the Agent mode is set.
+// INFO: 前端占用的路由(Agent模式下独有)
 var reactRouterAgentPaths = []string{
 	"/agent",
 }
 
 // Paths that are handled by the React router when the Agent mode is not set.
+// INFO: 前端占用的路由(Server模式下独有)
 var reactRouterServerPaths = []string{
 	"/alerts",
 	"/graph",
@@ -182,6 +187,7 @@ type LocalStorage interface {
 }
 
 // Handler serves various HTTP endpoints of the Prometheus server.
+// INFO: webserver对象
 type Handler struct {
 	logger log.Logger
 
@@ -198,6 +204,7 @@ type Handler struct {
 	exemplarStorage storage.ExemplarQueryable
 	notifier        *notifier.Manager
 
+	// INFO: apiV1对象
 	apiV1 *api_v1.API
 
 	router      *route.Router
@@ -218,6 +225,7 @@ type Handler struct {
 }
 
 // ApplyConfig updates the config field of the Handler struct.
+// INFO: 使用新的配置
 func (h *Handler) ApplyConfig(conf *config.Config) error {
 	h.mtx.Lock()
 	defer h.mtx.Unlock()
@@ -270,12 +278,14 @@ type Options struct {
 }
 
 // New initializes a new web Handler.
+// INFO: 创建web服务器对象
 func New(logger log.Logger, o *Options) *Handler {
 	if logger == nil {
 		logger = log.NewNopLogger()
 	}
 
 	m := newMetrics(o.Registerer)
+	// NOTE: 使用的是普米公用包中的Router(该Router实际上还是依赖于第三方的httprouter)
 	router := route.New().
 		WithInstrumentation(m.instrumentHandler).
 		WithInstrumentation(setPathWithPrefix(""))
@@ -285,13 +295,14 @@ func New(logger log.Logger, o *Options) *Handler {
 		cwd = "<error retrieving current working directory>"
 	}
 
+	// INFO: 创建webserver对象
 	h := &Handler{
 		logger: logger,
 
 		gatherer: o.Gatherer,
 		metrics:  m,
 
-		router:      router,
+		router:      router, // INFO: 指定router
 		quitCh:      make(chan struct{}),
 		reloadCh:    make(chan chan error),
 		options:     o,
@@ -364,34 +375,45 @@ func New(logger log.Logger, o *Options) *Handler {
 		router = router.WithPrefix(o.RoutePrefix)
 	}
 
+	// INFO: 指定访问根路径时跳转到的前端路径
 	homePage := "/graph"
+	// INFO: 代理模式下会有不同
 	if o.IsAgent {
 		homePage = "/agent"
 	}
 
 	readyf := h.testReady
 
+	// INFO: 访问根路径会跳转到前端的/graph或者/agent路径
 	router.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, path.Join(o.ExternalURL.Path, homePage), http.StatusFound)
 	})
 
 	// The console library examples at 'console_libraries/prom.lib' still depend on old asset files being served under `classic`.
+	// INFO: 老的资产文件路由注册(/classic开头)
 	router.Get("/classic/static/*filepath", func(w http.ResponseWriter, r *http.Request) {
 		r.URL.Path = path.Join("/static", route.Param(r.Context(), "filepath"))
 		fs := server.StaticFileServer(ui.Assets)
+		// NOTE: 注意这里委派了静态文件服务来处理这个请求
 		fs.ServeHTTP(w, r)
 	})
 
+	// INFO: 获取版本
 	router.Get("/version", h.version)
+	// INFO: 暴露普米本身的监控指标
 	router.Get("/metrics", promhttp.Handler().ServeHTTP)
 
+	// INFO: 用于联邦集群的接口
 	router.Get("/federate", readyf(httputil.CompressionHandler{
 		Handler: http.HandlerFunc(h.federation),
 	}.ServeHTTP))
 
 	router.Get("/consoles/*filepath", readyf(h.consoles))
 
+	// INFO: 前端路由的处理逻辑
+	// IMPT: 所有对前端路由的直接访问都会返回主页的html(然后在前端的逻辑里面会访问具体前端路由页面)
 	serveReactApp := func(w http.ResponseWriter, r *http.Request) {
+		// INFO: 读取主页html文件
 		f, err := ui.Assets.Open("/static/react/index.html")
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
@@ -405,14 +427,17 @@ func New(logger log.Logger, o *Options) *Handler {
 			fmt.Fprintf(w, "Error reading React index.html: %v", err)
 			return
 		}
+		// INFO: 替换相关的占位符
 		replacedIdx := bytes.ReplaceAll(idx, []byte("CONSOLES_LINK_PLACEHOLDER"), []byte(h.consolesPath()))
 		replacedIdx = bytes.ReplaceAll(replacedIdx, []byte("TITLE_PLACEHOLDER"), []byte(h.options.PageTitle))
 		replacedIdx = bytes.ReplaceAll(replacedIdx, []byte("AGENT_MODE_PLACEHOLDER"), []byte(strconv.FormatBool(h.options.IsAgent)))
 		replacedIdx = bytes.ReplaceAll(replacedIdx, []byte("READY_PLACEHOLDER"), []byte(strconv.FormatBool(h.isReady())))
+		// IMPT: 返回的是主页的html
 		w.Write(replacedIdx)
 	}
 
 	// Serve the React app.
+	// INFO: 设置前端路由
 	for _, p := range reactRouterPaths {
 		router.Get(p, serveReactApp)
 	}
@@ -439,9 +464,11 @@ func New(logger log.Logger, o *Options) *Handler {
 	}
 
 	// Static files required by the React app.
+	// INFO: 设置前端使用的静态文件路由
 	router.Get("/static/*filepath", func(w http.ResponseWriter, r *http.Request) {
 		r.URL.Path = path.Join("/static/react/static", route.Param(r.Context(), "filepath"))
 		fs := server.StaticFileServer(ui.Assets)
+		// NOTE: 注意这里委派了静态文件服务来处理这个请求
 		fs.ServeHTTP(w, r)
 	})
 
@@ -449,6 +476,7 @@ func New(logger log.Logger, o *Options) *Handler {
 		router.Get("/user/*filepath", route.FileServe(o.UserAssetsPath))
 	}
 
+	// INFO: 注册可用于启动/退出/重载普米服务的http接口
 	if o.EnableLifecycle {
 		router.Post("/-/quit", h.quit)
 		router.Put("/-/quit", h.quit)
@@ -476,6 +504,7 @@ func New(logger log.Logger, o *Options) *Handler {
 	router.Get("/debug/*subpath", serveDebug)
 	router.Post("/debug/*subpath", serveDebug)
 
+	// INFO: 服务健康状态的接口
 	router.Get("/-/healthy", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, o.AppName+" is Healthy.\n")
@@ -483,6 +512,7 @@ func New(logger log.Logger, o *Options) *Handler {
 	router.Head("/-/healthy", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
+	// INFO: 服务是否ready的接口
 	router.Get("/-/ready", readyf(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, o.AppName+" is Ready.\n")
@@ -582,6 +612,7 @@ func (h *Handler) Listener() (net.Listener, error) {
 }
 
 // Run serves the HTTP endpoints.
+// INFO: 启动web服务
 func (h *Handler) Run(ctx context.Context, listener net.Listener, webConfig string) error {
 	if listener == nil {
 		var err error
@@ -602,6 +633,7 @@ func (h *Handler) Run(ctx context.Context, listener net.Listener, webConfig stri
 	av1 := route.New().
 		WithInstrumentation(h.metrics.instrumentHandlerWithPrefix("/api/v1")).
 		WithInstrumentation(setPathWithPrefix(apiPath + "/v1"))
+	// IMPT: 注册openapi的接口(前端页面的查询也会使用这些接口)
 	h.apiV1.Register(av1)
 
 	mux.Handle(apiPath+"/v1/", http.StripPrefix(apiPath+"/v1", av1))

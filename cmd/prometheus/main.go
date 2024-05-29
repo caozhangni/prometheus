@@ -1311,8 +1311,10 @@ func main() {
 	}
 	{
 		// Web handler.
+		// INFO: 启动web服务
 		g.Add(
 			func() error {
+				// INFO: 运行web服务
 				if err := webHandler.Run(ctxWeb, listener, *webConfig); err != nil {
 					return fmt.Errorf("error starting web server: %w", err)
 				}
