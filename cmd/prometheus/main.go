@@ -45,6 +45,7 @@ import (
 
 	// INFO: client_golang是独立的普米golang客户端,可用于自己写metrics接口等
 	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
 	versioncollector "github.com/prometheus/client_golang/prometheus/collectors/version"
 
 	// INFO: common是普米各组件间共享的类库
@@ -269,6 +270,18 @@ func main() {
 		oldFlagRetentionDuration model.Duration
 		newFlagRetentionDuration model.Duration
 	)
+
+	// Unregister the default GoCollector, and reregister with our defaults.
+	if prometheus.Unregister(collectors.NewGoCollector()) {
+		prometheus.MustRegister(
+			collectors.NewGoCollector(
+				collectors.WithGoCollectorRuntimeMetrics(
+					collectors.MetricsGC,
+					collectors.MetricsScheduler,
+				),
+			),
+		)
+	}
 
 	// INFO: 创建命令行选项对象
 	cfg := flagConfig{
