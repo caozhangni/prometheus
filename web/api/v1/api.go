@@ -115,6 +115,8 @@ type AlertmanagerRetriever interface {
 }
 
 // RulesRetriever provides a list of active rules and alerts.
+// IMPT: 这里单独定义一个规则获取器的interface的原因，
+// IMPT: 我理解是为了接口隔离，因为如果直接依赖RuleManager的话，那依赖的方法太多了
 type RulesRetriever interface {
 	RuleGroups() []*rules.Group
 	AlertingRules() []*rules.AlertingRule
@@ -206,12 +208,13 @@ type API struct {
 	scrapePoolsRetriever  func(context.Context) ScrapePoolsRetriever
 	targetRetriever       func(context.Context) TargetRetriever
 	alertmanagerRetriever func(context.Context) AlertmanagerRetriever
-	rulesRetriever        func(context.Context) RulesRetriever
-	now                   func() time.Time
-	config                func() config.Config
-	flagsMap              map[string]string
-	ready                 func(http.HandlerFunc) http.HandlerFunc
-	globalURLOptions      GlobalURLOptions
+	// INFO: 用于获取规则
+	rulesRetriever   func(context.Context) RulesRetriever
+	now              func() time.Time
+	config           func() config.Config
+	flagsMap         map[string]string
+	ready            func(http.HandlerFunc) http.HandlerFunc
+	globalURLOptions GlobalURLOptions
 
 	db          TSDBAdminStats
 	dbDir       string
@@ -1397,10 +1400,12 @@ type RecordingRule struct {
 
 // INFO: 规则接口处理函数
 func (api *API) rules(r *http.Request) apiFuncResult {
+	// INFO: 解析请求行参数解析到r.Form
 	if err := r.ParseForm(); err != nil {
 		return apiFuncResult{nil, &apiError{errorBadData, fmt.Errorf("error parsing form values: %w", err)}, nil, nil}
 	}
 
+	// INFO: 该函数用于将单个请求行参数的多个值转换为一个集合
 	queryFormToSet := func(values []string) map[string]struct{} {
 		set := make(map[string]struct{}, len(values))
 		for _, v := range values {
@@ -1409,6 +1414,8 @@ func (api *API) rules(r *http.Request) apiFuncResult {
 		return set
 	}
 
+	// INFO: 普米的接口中规定一个参数请求行参数有多个值时使用[]的方式表示
+	// INFO: 如rule_name[]=HighRequestLatency&rule_name[]=Up
 	rnSet := queryFormToSet(r.Form["rule_name[]"])
 	rgSet := queryFormToSet(r.Form["rule_group[]"])
 	fSet := queryFormToSet(r.Form["file[]"])

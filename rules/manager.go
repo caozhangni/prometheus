@@ -382,6 +382,7 @@ func (m *Manager) LoadGroups(
 }
 
 // RuleGroups returns the list of manager's rule groups.
+// INFO: 返回规则组对象的切片
 func (m *Manager) RuleGroups() []*Group {
 	m.mtx.RLock()
 	defer m.mtx.RUnlock()
