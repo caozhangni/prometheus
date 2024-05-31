@@ -118,6 +118,7 @@ type ManagerOptions struct {
 	ForGracePeriod            time.Duration
 	ResendDelay               time.Duration
 	GroupLoader               GroupLoader
+	DefaultRuleQueryOffset    func() time.Duration
 	MaxConcurrentEvals        int64
 	ConcurrentEvalsEnabled    bool
 	RuleConcurrencyController RuleConcurrencyController
@@ -372,6 +373,7 @@ func (m *Manager) LoadGroups(
 				Rules:             rules,
 				ShouldRestore:     shouldRestore,
 				Opts:              m.opts,
+				QueryOffset:       (*time.Duration)(rg.QueryOffset),
 				done:              m.done,
 				EvalIterationFunc: groupEvalIterationFunc,
 			})

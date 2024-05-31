@@ -48,6 +48,7 @@ type Group struct {
 	name                 string // INFO: 规则组的名称
 	file                 string // INFO: 规则组的配置文件及路径
 	interval             time.Duration
+	queryOffset          *time.Duration
 	limit                int
 	rules                []Rule                     // INFO: 规则对象集合
 	seriesInPreviousEval []map[string]labels.Labels // One per Rule.
@@ -94,6 +95,7 @@ type GroupOptions struct {
 	Rules             []Rule
 	ShouldRestore     bool
 	Opts              *ManagerOptions
+	QueryOffset       *time.Duration
 	done              chan struct{}
 	EvalIterationFunc GroupEvalIterationFunc
 }
@@ -130,6 +132,7 @@ func NewGroup(o GroupOptions) *Group {
 		name:                  o.Name,
 		file:                  o.File,
 		interval:              o.Interval,
+		queryOffset:           o.QueryOffset,
 		limit:                 o.Limit,
 		rules:                 o.Rules,
 		shouldRestore:         o.ShouldRestore,
@@ -481,6 +484,8 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 		wg           sync.WaitGroup
 	)
 
+	ruleQueryOffset := g.QueryOffset()
+
 	// INFO: 遍历每个规则对象进行评估
 	for i, rule := range g.rules {
 		select {
@@ -515,7 +520,7 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 			g.metrics.EvalTotal.WithLabelValues(GroupKey(g.File(), g.Name())).Inc()
 
 			// INFO: 进行单条规则的评估(注意既可能是recording rule也可能是alerting rule)
-			vector, err := rule.Eval(ctx, ts, g.opts.QueryFunc, g.opts.ExternalURL, g.Limit())
+			vector, err := rule.Eval(ctx, ruleQueryOffset, ts, g.opts.QueryFunc, g.opts.ExternalURL, g.Limit())
 			if err != nil {
 				rule.SetHealth(HealthBad)
 				rule.SetLastError(err)
@@ -604,7 +609,7 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 			for metric, lset := range g.seriesInPreviousEval[i] {
 				if _, ok := seriesReturned[metric]; !ok {
 					// Series no longer exposed, mark it stale.
-					_, err = app.Append(0, lset, timestamp.FromTime(ts), math.Float64frombits(value.StaleNaN))
+					_, err = app.Append(0, lset, timestamp.FromTime(ts.Add(-ruleQueryOffset)), math.Float64frombits(value.StaleNaN))
 					unwrappedErr := errors.Unwrap(err)
 					if unwrappedErr == nil {
 						unwrappedErr = err
@@ -643,14 +648,27 @@ func (g *Group) Eval(ctx context.Context, ts time.Time) {
 	g.cleanupStaleSeries(ctx, ts)
 }
 
+func (g *Group) QueryOffset() time.Duration {
+	if g.queryOffset != nil {
+		return *g.queryOffset
+	}
+
+	if g.opts.DefaultRuleQueryOffset != nil {
+		return g.opts.DefaultRuleQueryOffset()
+	}
+
+	return time.Duration(0)
+}
+
 func (g *Group) cleanupStaleSeries(ctx context.Context, ts time.Time) {
 	if len(g.staleSeries) == 0 {
 		return
 	}
 	app := g.opts.Appendable.Appender(ctx)
+	queryOffset := g.QueryOffset()
 	for _, s := range g.staleSeries {
 		// Rule that produced series no longer configured, mark it stale.
-		_, err := app.Append(0, s, timestamp.FromTime(ts), math.Float64frombits(value.StaleNaN))
+		_, err := app.Append(0, s, timestamp.FromTime(ts.Add(-queryOffset)), math.Float64frombits(value.StaleNaN))
 		unwrappedErr := errors.Unwrap(err)
 		if unwrappedErr == nil {
 			unwrappedErr = err
