@@ -840,6 +840,10 @@ func (g *Group) Equals(ng *Group) bool {
 		return false
 	}
 
+	if ((g.queryOffset == nil) != (ng.queryOffset == nil)) || (g.queryOffset != nil && ng.queryOffset != nil && *g.queryOffset != *ng.queryOffset) {
+		return false
+	}
+
 	// INFO: 判断规则数量
 	if len(g.rules) != len(ng.rules) {
 		return false
