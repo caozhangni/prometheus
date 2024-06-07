@@ -50,6 +50,7 @@ type Rule interface {
 	// SetLastError sets the current error experienced by the rule.
 	SetLastError(error)
 	// LastError returns the last error experienced by the rule.
+	// INFO: 获取最近一次规则评估的错误
 	LastError() error
 	// SetHealth sets the current health of the rule.
 	SetHealth(RuleHealth)

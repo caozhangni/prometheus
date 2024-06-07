@@ -116,6 +116,7 @@ func (e ErrStorage) Error() string {
 }
 
 // QueryEngine defines the interface for the *promql.Engine, so it can be replaced, wrapped or mocked.
+// INFO: 定义查询引擎的接口(方便提供不同的实现和mock对象)
 type QueryEngine interface {
 	NewInstantQuery(ctx context.Context, q storage.Queryable, opts QueryOpts, qs string, ts time.Time) (Query, error)
 	NewRangeQuery(ctx context.Context, q storage.Queryable, opts QueryOpts, qs string, start, end time.Time, interval time.Duration) (Query, error)
@@ -130,10 +131,13 @@ type QueryLogger interface {
 
 // A Query is derived from an a raw query string and can be run against an engine
 // it is associated with.
+// INFO: 可基于某个查询引擎执行字符串查询语句
 type Query interface {
 	// Exec processes the query. Can only be called once.
+	// INFO: 执行查询(只能执行一次)
 	Exec(ctx context.Context) *Result
 	// Close recovers memory used by the query result.
+	// INFO: 回收查询结果的内存
 	Close()
 	// Statement returns the parsed statement of the query.
 	Statement() parser.Statement
@@ -177,6 +181,7 @@ type QueryOpts interface {
 }
 
 // query implements the Query interface.
+// INFO: Query interface的实现
 type query struct {
 	// Underlying data provider.
 	queryable storage.Queryable
@@ -187,6 +192,7 @@ type query struct {
 	// Timer stats for the query execution.
 	stats *stats.QueryTimers
 	// Sample stats for the query execution.
+	// INFO: 查询执行的样本统计
 	sampleStats *stats.QuerySamples
 	// Result matrix for reuse.
 	matrix Matrix
@@ -235,6 +241,7 @@ func (q *query) Close() {
 }
 
 // Exec implements the Query interface.
+// INFO: 执行查询
 func (q *query) Exec(ctx context.Context) *Result {
 	if span := trace.SpanFromContext(ctx); span != nil {
 		span.SetAttributes(attribute.String(queryTag, q.stmt.String()))
@@ -317,6 +324,7 @@ type EngineOpts struct {
 
 // Engine handles the lifetime of queries from beginning to end.
 // It is connected to a querier.
+// NOTE: 查询引擎的唯一实现
 type Engine struct {
 	logger                   log.Logger
 	metrics                  *engineMetrics
@@ -589,6 +597,7 @@ func (ng *Engine) NewTestQuery(f func(context.Context) error) Query {
 //
 // At this point per query only one EvalStmt is evaluated. Alert and record
 // statements are not handled by the Engine.
+// INFO: 执行查询
 func (ng *Engine) exec(ctx context.Context, q *query) (v parser.Value, ws annotations.Annotations, err error) {
 	ng.metrics.currentQueries.Inc()
 	defer func() {
@@ -596,6 +605,9 @@ func (ng *Engine) exec(ctx context.Context, q *query) (v parser.Value, ws annota
 		ng.metrics.querySamples.Add(float64(q.sampleStats.TotalSamples))
 	}()
 
+	// INFO: 添加默认的超时上下文(默认2m)
+	// IMPT: 注意这里父上下文可能也带有超时的上下文，根据上下文的机制，哪个时间短就以哪个为准
+	// IMPT: 也就是说，ng.timeout其实是"最大"的超时时间
 	ctx, cancel := context.WithTimeout(ctx, ng.timeout)
 	q.cancel = cancel
 

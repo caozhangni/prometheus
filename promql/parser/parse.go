@@ -165,6 +165,7 @@ func EnrichParseError(err error, enrich func(parseErr *ParseErr)) {
 }
 
 // ParseExpr returns the expression parsed from the input.
+// INFO: 将字符串形式的promql表达式转为为抽象语法树中的Expr节点类型
 func ParseExpr(input string) (expr Expr, err error) {
 	p := NewParser(input)
 	defer p.Close()

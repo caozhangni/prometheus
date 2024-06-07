@@ -87,6 +87,7 @@ const (
 
 var LocalhostRepresentations = []string{"127.0.0.1", "localhost", "::1"}
 
+// INFO: 定义api错误
 type apiError struct {
 	typ errorType
 	err error
@@ -373,8 +374,10 @@ func (api *API) Register(r *route.Router) {
 
 	r.Options("/*path", wrap(api.options))
 
+	// NOTE: 使用表达式查询某一个时间点的指标数据(GET和POST方法都是可以的)
 	r.Get("/query", wrapAgent(api.query))
 	r.Post("/query", wrapAgent(api.query))
+	// NOTE: 使用表达式查询某一个范围内的指标数据(GET和POST方法都是可以的)
 	r.Get("/query_range", wrapAgent(api.queryRange))
 	r.Post("/query_range", wrapAgent(api.queryRange))
 	r.Get("/query_exemplars", wrapAgent(api.queryExemplars))
@@ -396,6 +399,7 @@ func (api *API) Register(r *route.Router) {
 	r.Get("/targets/metadata", wrap(api.targetMetadata))
 	r.Get("/alertmanagers", wrapAgent(api.alertmanagers))
 
+	// INFO: 获取指标的元数据（如指标查询页面上输入指标时会出现指标的提示，用的就是这个接口的数据）
 	r.Get("/metadata", wrap(api.metricMetadata))
 
 	r.Get("/status/config", wrap(api.serveConfig))
@@ -428,6 +432,7 @@ type QueryData struct {
 	Stats      stats.QueryStats `json:"stats,omitempty"`
 }
 
+// INFO: 该函数用于创建表示参数错误的apiFuncResult
 func invalidParamError(err error, parameter string) apiFuncResult {
 	return apiFuncResult{nil, &apiError{
 		errorBadData, fmt.Errorf("invalid parameter %q: %w", parameter, err),
@@ -438,24 +443,32 @@ func (api *API) options(*http.Request) apiFuncResult {
 	return apiFuncResult{nil, nil, nil, nil}
 }
 
+// INFO: 查询某一个时间点的指标数据
 func (api *API) query(r *http.Request) (result apiFuncResult) {
+	// INFO: 获取查询的时间点，如没有，则取服务器的当前时间点
 	ts, err := parseTimeParam(r, "time", api.now())
 	if err != nil {
 		return invalidParamError(err, "time")
 	}
+	// INFO: 获取请求的上下文
 	ctx := r.Context()
+	// INFO: 如果timeout参数是有值的，那么添加超时的逻辑
 	if to := r.FormValue("timeout"); to != "" {
 		var cancel context.CancelFunc
+		// INFO: 解析为Duration对象
 		timeout, err := parseDuration(to)
 		if err != nil {
 			return invalidParamError(err, "timeout")
 		}
 
+		// INFO: 在上下文中添加超时的功能
 		ctx, cancel = context.WithDeadline(ctx, api.now().Add(timeout))
 		defer cancel()
 	}
 
+	// INFO: 获取promql的QueryOpts对象
 	opts, err := extractQueryOpts(r)
+	// INFO: 获取QueryOpts对象可能出错
 	if err != nil {
 		return apiFuncResult{nil, &apiError{errorBadData, err}, nil, nil}
 	}
@@ -503,10 +516,13 @@ func (api *API) formatQuery(r *http.Request) (result apiFuncResult) {
 	return apiFuncResult{expr.Pretty(0), nil, nil, nil}
 }
 
+// INFO: 从Request对象回去promql的QueryOpts对象
 func extractQueryOpts(r *http.Request) (promql.QueryOpts, error) {
 	var duration time.Duration
 
+	// INFO: 支持lookback_delta参数
 	if strDuration := r.FormValue("lookback_delta"); strDuration != "" {
+		// INFO: 解析字符串为duration对象
 		parsedDuration, err := parseDuration(strDuration)
 		if err != nil {
 			return nil, fmt.Errorf("error parsing lookback delta duration: %w", err)
@@ -514,6 +530,8 @@ func extractQueryOpts(r *http.Request) (promql.QueryOpts, error) {
 		duration = parsedDuration
 	}
 
+	// INFO: 创建promql的QueryOpts对象
+	// NOTE: stats为all表示返回的数据里面会有统计相关的数据(即stats字段)
 	return promql.NewPrometheusQueryOpts(r.FormValue("stats") == "all", duration), nil
 }
 
@@ -1231,6 +1249,7 @@ type AlertDiscovery struct {
 }
 
 // Alert has info for an alert.
+// INFO: api层内部定义的告警对象
 type Alert struct {
 	Labels          labels.Labels `json:"labels"`
 	Annotations     labels.Labels `json:"annotations"`
@@ -1256,6 +1275,7 @@ func (api *API) alerts(r *http.Request) apiFuncResult {
 	return apiFuncResult{res, nil, nil, nil}
 }
 
+// INFO: 转换原始的告警对象为api层内部定义的告警对象
 func rulesAlertsToAPIAlerts(rulesAlerts []*rules.Alert) []*Alert {
 	apiAlerts := make([]*Alert, len(rulesAlerts))
 	for i, ruleAlert := range rulesAlerts {
@@ -1274,6 +1294,7 @@ func rulesAlertsToAPIAlerts(rulesAlerts []*rules.Alert) []*Alert {
 	return apiAlerts
 }
 
+// INFO: 查询指标的元数据
 func (api *API) metricMetadata(r *http.Request) apiFuncResult {
 	metrics := map[string]map[metadata.Metadata]struct{}{}
 
@@ -1348,11 +1369,13 @@ func (api *API) metricMetadata(r *http.Request) apiFuncResult {
 }
 
 // RuleDiscovery has info for all rules.
+// INFO: 规则相关请求返回的结构体
 type RuleDiscovery struct {
 	RuleGroups []*RuleGroup `json:"groups"`
 }
 
 // RuleGroup has info for rules which are part of a group.
+// INFO: api层内部定义的规则组对象（因为只需要原始规则组的一部分内容）
 type RuleGroup struct {
 	Name string `json:"name"`
 	File string `json:"file"`
@@ -1366,8 +1389,10 @@ type RuleGroup struct {
 	LastEvaluation time.Time `json:"lastEvaluation"`
 }
 
+// INFO: api层内部定义的规则对象(具体实现可能是告警规则也可能是记录规则)
 type Rule interface{}
 
+// INFO: api层内部定义的告警规则对象
 type AlertingRule struct {
 	// State can be "pending", "firing", "inactive".
 	State          string           `json:"state"`
@@ -1386,6 +1411,7 @@ type AlertingRule struct {
 	Type string `json:"type"`
 }
 
+// INFO: api层内部定义的记录规则对象
 type RecordingRule struct {
 	Name           string           `json:"name"`
 	Query          string           `json:"query"`
@@ -1416,71 +1442,99 @@ func (api *API) rules(r *http.Request) apiFuncResult {
 
 	// INFO: 普米的接口中规定一个参数请求行参数有多个值时使用[]的方式表示
 	// INFO: 如rule_name[]=HighRequestLatency&rule_name[]=Up
+	// INFO: rnSet为需要过滤的规则名称
 	rnSet := queryFormToSet(r.Form["rule_name[]"])
+	// INFO: rgSet为需要过滤的规则组名称
 	rgSet := queryFormToSet(r.Form["rule_group[]"])
+	// INFO: rgSet为需要过滤的规则文件名称
 	fSet := queryFormToSet(r.Form["file[]"])
 
+	// INFO: 获取规则组
 	ruleGroups := api.rulesRetriever(r.Context()).RuleGroups()
+	// INFO: 规则相关请求返回的结构体
 	res := &RuleDiscovery{RuleGroups: make([]*RuleGroup, 0, len(ruleGroups))}
 	typ := strings.ToLower(r.URL.Query().Get("type"))
 
+	// INFO: 检查type参数
 	if typ != "" && typ != "alert" && typ != "record" {
 		return invalidParamError(fmt.Errorf("not supported value %q", typ), "type")
 	}
 
+	// INFO: 判断是否需要返回告警规则
 	returnAlerts := typ == "" || typ == "alert"
+	// INFO: 判断是否需要返回记录规则
 	returnRecording := typ == "" || typ == "record"
 
+	// INFO: 解析exclude_alerts请求行参数
 	excludeAlerts, err := parseExcludeAlerts(r)
 	if err != nil {
 		return invalidParamError(err, "exclude_alerts")
 	}
 
 	rgs := make([]*RuleGroup, 0, len(ruleGroups))
+	// NOTE: 对每个规则组进行遍历
 	for _, grp := range ruleGroups {
+		// INFO: rgSet有内容，说明是需要过滤规则组的
 		if len(rgSet) > 0 {
+			// INFO: 如果没有匹配到，则说明不需要查询到这个组，所以continue了
 			if _, ok := rgSet[grp.Name()]; !ok {
 				continue
 			}
 		}
 
+		// INFO: fSet有内容，说明是需要过滤规则文件的
 		if len(fSet) > 0 {
+			// INFO: 如果没有匹配到，则说明不需要查询到这个组，所以continue了
 			if _, ok := fSet[grp.File()]; !ok {
 				continue
 			}
 		}
 
+		// INFO: 转换原始的规则组为api层内部定义的规则组对象
 		apiRuleGroup := &RuleGroup{
-			Name:           grp.Name(),
-			File:           grp.File(),
-			Interval:       grp.Interval().Seconds(),
-			Limit:          grp.Limit(),
+			Name:     grp.Name(),
+			File:     grp.File(),
+			Interval: grp.Interval().Seconds(),
+			Limit:    grp.Limit(),
+			// INFO: 这里的Rule也是api层内部定义的规则对象
 			Rules:          []Rule{},
 			EvaluationTime: grp.GetEvaluationTime().Seconds(),
 			LastEvaluation: grp.GetLastEvaluation(),
 		}
+		// NOTE: 对每个规则进行遍历
 		for _, rr := range grp.Rules() {
+			// INFO: api层内部浓缩的规则对象(enriched有浓缩的，强化的意思)
 			var enrichedRule Rule
 
+			// INFO: rnSet有内容，说明是需要过滤规则名称的
 			if len(rnSet) > 0 {
+				// INFO: 如果没有匹配到，则说明不需要查询到这个规则，所以continue了
 				if _, ok := rnSet[rr.Name()]; !ok {
 					continue
 				}
 			}
 
+			// INFO: 最近一次规则评估的错误
 			lastError := ""
 			if rr.LastError() != nil {
+				// INFO: 设置错误的文本信息
 				lastError = rr.LastError().Error()
 			}
+			// NOTE: 判断是告警规则还是记录规则
 			switch rule := rr.(type) {
 			case *rules.AlertingRule:
+				// INFO: 当前的请求不需要告警规则，直接break掉当前的switch语句
 				if !returnAlerts {
 					break
 				}
+				// INFO: api层内部定义的active告警
 				var activeAlerts []*Alert
+				// INFO: 请求中可以排除告警对象
 				if !excludeAlerts {
+					// INFO: 转换原始的告警对象为api层内部定义的告警对象
 					activeAlerts = rulesAlertsToAPIAlerts(rule.ActiveAlerts())
 				}
+				// INFO: 创建api层内部定义的告警规则对象
 				enrichedRule = AlertingRule{
 					State:          rule.State().String(),
 					Name:           rule.Name(),
@@ -1497,9 +1551,11 @@ func (api *API) rules(r *http.Request) apiFuncResult {
 					Type:           "alerting",
 				}
 			case *rules.RecordingRule:
+				// INFO: 当前的请求不需要记录规则，直接break掉当前的switch语句
 				if !returnRecording {
 					break
 				}
+				// INFO: 创建api层内部定义的记录规则对象
 				enrichedRule = RecordingRule{
 					Name:           rule.Name(),
 					Query:          rule.Query().String(),
@@ -1516,19 +1572,23 @@ func (api *API) rules(r *http.Request) apiFuncResult {
 			}
 
 			if enrichedRule != nil {
+				// INFO: 放入内部定义的规则组对象中
 				apiRuleGroup.Rules = append(apiRuleGroup.Rules, enrichedRule)
 			}
 		}
 
 		// If the rule group response has no rules, skip it - this means we filtered all the rules of this group.
+		// INFO: 如果当前规则组有规则，才放入规则组集中(即rgs)，否则不需要了
 		if len(apiRuleGroup.Rules) > 0 {
 			rgs = append(rgs, apiRuleGroup)
 		}
 	}
+	// INFO: 放入响应的结构体中
 	res.RuleGroups = rgs
 	return apiFuncResult{res, nil, nil, nil}
 }
 
+// INFO: 解析exclude_alerts请求行参数
 func parseExcludeAlerts(r *http.Request) (bool, error) {
 	excludeAlertsParam := strings.ToLower(r.URL.Query().Get("exclude_alerts"))
 
@@ -1856,11 +1916,15 @@ func (api *API) respondError(w http.ResponseWriter, apiErr *apiError, data inter
 	}
 }
 
+// INFO: 解析Request中的时间参数
 func parseTimeParam(r *http.Request, paramName string, defaultValue time.Time) (time.Time, error) {
+	// INFO: 获取字符串形式的值
 	val := r.FormValue(paramName)
+	// INFO: 没有则取默认的时间
 	if val == "" {
 		return defaultValue, nil
 	}
+	// INFO: 将字符串解析为时间对象
 	result, err := parseTime(val)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("Invalid time value for '%s': %w", paramName, err)
@@ -1868,6 +1932,7 @@ func parseTimeParam(r *http.Request, paramName string, defaultValue time.Time) (
 	return result, nil
 }
 
+// INFO: 将字符串解析为时间对象
 func parseTime(s string) (time.Time, error) {
 	if t, err := strconv.ParseFloat(s, 64); err == nil {
 		s, ns := math.Modf(t)
@@ -1891,6 +1956,7 @@ func parseTime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("cannot parse %q to a valid timestamp", s)
 }
 
+// INFO: 解析字符串为Duration对象
 func parseDuration(s string) (time.Duration, error) {
 	if d, err := strconv.ParseFloat(s, 64); err == nil {
 		ts := d * float64(time.Second)
