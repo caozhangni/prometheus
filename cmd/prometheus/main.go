@@ -1272,7 +1272,7 @@ func main() {
 	// 因为代理模式会从抓取数据并远程写,并不会写入本地,但是也会有crash-safe的问题,所以还是需要wal
 	if agentMode {
 		// WAL storage.
-		opts := cfg.agent.ToAgentOptions()
+		opts := cfg.agent.ToAgentOptions(cfg.tsdb.OutOfOrderTimeWindow)
 		cancel := make(chan struct{})
 		g.Add(
 			func() error {
@@ -1309,6 +1309,7 @@ func main() {
 					"TruncateFrequency", cfg.agent.TruncateFrequency,
 					"MinWALTime", cfg.agent.MinWALTime,
 					"MaxWALTime", cfg.agent.MaxWALTime,
+					"OutOfOrderTimeWindow", cfg.agent.OutOfOrderTimeWindow,
 				)
 
 				// IMPT: 代理模式下,设置本地存储为TSDB agent下的DB
@@ -1822,17 +1823,22 @@ type agentOptions struct {
 	TruncateFrequency      model.Duration
 	MinWALTime, MaxWALTime model.Duration
 	NoLockfile             bool
+	OutOfOrderTimeWindow   int64
 }
 
-func (opts agentOptions) ToAgentOptions() agent.Options {
+func (opts agentOptions) ToAgentOptions(outOfOrderTimeWindow int64) agent.Options {
+	if outOfOrderTimeWindow < 0 {
+		outOfOrderTimeWindow = 0
+	}
 	return agent.Options{
-		WALSegmentSize:    int(opts.WALSegmentSize),
-		WALCompression:    wlog.ParseCompressionType(opts.WALCompression, opts.WALCompressionType),
-		StripeSize:        opts.StripeSize,
-		TruncateFrequency: time.Duration(opts.TruncateFrequency),
-		MinWALTime:        durationToInt64Millis(time.Duration(opts.MinWALTime)),
-		MaxWALTime:        durationToInt64Millis(time.Duration(opts.MaxWALTime)),
-		NoLockfile:        opts.NoLockfile,
+		WALSegmentSize:       int(opts.WALSegmentSize),
+		WALCompression:       wlog.ParseCompressionType(opts.WALCompression, opts.WALCompressionType),
+		StripeSize:           opts.StripeSize,
+		TruncateFrequency:    time.Duration(opts.TruncateFrequency),
+		MinWALTime:           durationToInt64Millis(time.Duration(opts.MinWALTime)),
+		MaxWALTime:           durationToInt64Millis(time.Duration(opts.MaxWALTime)),
+		NoLockfile:           opts.NoLockfile,
+		OutOfOrderTimeWindow: outOfOrderTimeWindow,
 	}
 }
 
