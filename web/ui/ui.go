@@ -30,6 +30,7 @@ import (
 // INFO: 获取前端的资产对象(静态文件)
 // INFO: 注意这个匿名函数是在初始化时就执行了的
 var Assets = func() http.FileSystem {
+	// INFO: 获取工作目录
 	wd, err := os.Getwd()
 	if err != nil {
 		panic(err)
@@ -38,6 +39,9 @@ var Assets = func() http.FileSystem {
 	switch filepath.Base(wd) {
 	case "prometheus":
 		// When running Prometheus (without built-in assets) from the repo root.
+		assetsPrefix = "./web/ui"
+	// INFO: 我的代码是在my_prometheus目录下的,所以自己写了一个，否则读取不到静态文件
+	case "my_prometheus":
 		assetsPrefix = "./web/ui"
 	case "web":
 		// When running web tests.

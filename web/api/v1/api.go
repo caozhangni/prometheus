@@ -383,6 +383,7 @@ func (api *API) Register(r *route.Router) {
 	r.Get("/query_exemplars", wrapAgent(api.queryExemplars))
 	r.Post("/query_exemplars", wrapAgent(api.queryExemplars))
 
+	// NOTE: 格式化查询语句(GET和POST方法都是可以的)
 	r.Get("/format_query", wrapAgent(api.formatQuery))
 	r.Post("/format_query", wrapAgent(api.formatQuery))
 
@@ -472,6 +473,7 @@ func (api *API) query(r *http.Request) (result apiFuncResult) {
 	if err != nil {
 		return apiFuncResult{nil, &apiError{errorBadData, err}, nil, nil}
 	}
+	// INFO: 创建Query对象
 	qry, err := api.QueryEngine.NewInstantQuery(ctx, api.Queryable, opts, r.FormValue("query"), ts)
 	if err != nil {
 		return invalidParamError(err, "query")
@@ -488,12 +490,14 @@ func (api *API) query(r *http.Request) (result apiFuncResult) {
 
 	ctx = httputil.ContextFromRequest(ctx, r)
 
+	// INFO: 执行查询
 	res := qry.Exec(ctx)
 	if res.Err != nil {
 		return apiFuncResult{nil, returnAPIError(res.Err), res.Warnings, qry.Close}
 	}
 
 	// Optional stats field in response if parameter "stats" is not empty.
+	// INFO: 对统计数据进行渲染
 	sr := api.statsRenderer
 	if sr == nil {
 		sr = DefaultStatsRenderer
@@ -507,7 +511,9 @@ func (api *API) query(r *http.Request) (result apiFuncResult) {
 	}, nil, res.Warnings, qry.Close}
 }
 
+// INFO: 格式化查询语句
 func (api *API) formatQuery(r *http.Request) (result apiFuncResult) {
+	// INFO: 解析查询语句为表达式对象
 	expr, err := parser.ParseExpr(r.FormValue("query"))
 	if err != nil {
 		return invalidParamError(err, "query")

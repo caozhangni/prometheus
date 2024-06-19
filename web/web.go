@@ -392,6 +392,7 @@ func New(logger log.Logger, o *Options) *Handler {
 	// The console library examples at 'console_libraries/prom.lib' still depend on old asset files being served under `classic`.
 	// INFO: 老的资产文件路由注册(/classic开头)
 	router.Get("/classic/static/*filepath", func(w http.ResponseWriter, r *http.Request) {
+		// INFO: 替换请求的路径
 		r.URL.Path = path.Join("/static", route.Param(r.Context(), "filepath"))
 		fs := server.StaticFileServer(ui.Assets)
 		// NOTE: 注意这里委派了静态文件服务来处理这个请求

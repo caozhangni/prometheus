@@ -33,6 +33,8 @@ import (
 	"github.com/prometheus/prometheus/util/strutil"
 )
 
+// INFO: 解析器池
+// TODO: 还要看下实现的原理
 var parserPool = sync.Pool{
 	New: func() interface{} {
 		return &parser{}
@@ -44,6 +46,7 @@ type Parser interface {
 	Close()
 }
 
+// INFO: 解析器对象
 type parser struct {
 	lex Lexer
 
@@ -72,7 +75,9 @@ func WithFunctions(functions map[string]*Function) Opt {
 }
 
 // NewParser returns a new parser.
+// INFO: 根据输入的字符串创建解析器对象
 func NewParser(input string, opts ...Opt) *parser { //nolint:revive // unexported-return.
+	// INFO: 从池中获取解析器
 	p := parserPool.Get().(*parser)
 
 	p.functions = Functions
@@ -81,6 +86,7 @@ func NewParser(input string, opts ...Opt) *parser { //nolint:revive // unexporte
 	p.generatedParserResult = nil
 
 	// Clear lexer struct before reusing.
+	// INFO: 创建词法分析器
 	p.lex = Lexer{
 		input: input,
 		state: lexStatements,
@@ -94,6 +100,8 @@ func NewParser(input string, opts ...Opt) *parser { //nolint:revive // unexporte
 	return p
 }
 
+// INFO: 解析为Expr对象
+// TODO: 具体实现还要看下
 func (p *parser) ParseExpr() (expr Expr, err error) {
 	defer p.recover(&err)
 
@@ -167,8 +175,10 @@ func EnrichParseError(err error, enrich func(parseErr *ParseErr)) {
 // ParseExpr returns the expression parsed from the input.
 // INFO: 将字符串形式的promql表达式转为为抽象语法树中的Expr节点类型
 func ParseExpr(input string) (expr Expr, err error) {
+	// INFO: 创建解析器
 	p := NewParser(input)
 	defer p.Close()
+	// INFO: 解析为Expr对象
 	return p.ParseExpr()
 }
 
@@ -836,6 +846,8 @@ func parseDuration(ds string) (time.Duration, error) {
 // parseGenerated invokes the yacc generated parser.
 // The generated parser gets the provided startSymbol injected into
 // the lexer stream, based on which grammar will be used.
+// INFO: 调用yacc来生成解析器
+// TODO: 具体实现还要看下
 func (p *parser) parseGenerated(startSymbol ItemType) interface{} {
 	p.InjectItem(startSymbol)
 

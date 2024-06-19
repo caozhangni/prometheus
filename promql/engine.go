@@ -118,7 +118,9 @@ func (e ErrStorage) Error() string {
 // QueryEngine defines the interface for the *promql.Engine, so it can be replaced, wrapped or mocked.
 // INFO: 定义查询引擎的接口(方便提供不同的实现和mock对象)
 type QueryEngine interface {
+	// INFO: 创建查询某个时间点的Query对象(其实也可以查询时间段，比如查询语句中使用up[5m]这种方式)
 	NewInstantQuery(ctx context.Context, q storage.Queryable, opts QueryOpts, qs string, ts time.Time) (Query, error)
+	// INFO: 创建查询某个时间段的Query对象
 	NewRangeQuery(ctx context.Context, q storage.Queryable, opts QueryOpts, qs string, start, end time.Time, interval time.Duration) (Query, error)
 }
 
@@ -200,6 +202,7 @@ type query struct {
 	cancel func()
 
 	// The engine against which the query is executed.
+	// INFO: 查询引擎
 	ng *Engine
 }
 
@@ -248,6 +251,7 @@ func (q *query) Exec(ctx context.Context) *Result {
 	}
 
 	// Exec query.
+	// INFO: 调用查询引擎进行查询
 	res, warnings, err := q.ng.exec(ctx, q)
 	return &Result{Err: err, Value: res, Warnings: warnings}
 }
@@ -455,6 +459,7 @@ func (ng *Engine) SetQueryLogger(l QueryLogger) {
 }
 
 // NewInstantQuery returns an evaluation query for the given expression at the given time.
+// INFO: 创建查询某个时间点的Query对象(其实也可以查询时间段，比如查询语句中使用up[5m]这种方式)
 func (ng *Engine) NewInstantQuery(ctx context.Context, q storage.Queryable, opts QueryOpts, qs string, ts time.Time) (Query, error) {
 	pExpr, qry := ng.newQuery(q, qs, opts, ts, ts, 0)
 	finishQueue, err := ng.queueActive(ctx, qry)
@@ -462,6 +467,7 @@ func (ng *Engine) NewInstantQuery(ctx context.Context, q storage.Queryable, opts
 		return nil, err
 	}
 	defer finishQueue()
+	// INFO: 创建表达式对象
 	expr, err := parser.ParseExpr(qs)
 	if err != nil {
 		return nil, err
@@ -476,6 +482,7 @@ func (ng *Engine) NewInstantQuery(ctx context.Context, q storage.Queryable, opts
 
 // NewRangeQuery returns an evaluation query for the given time range and with
 // the resolution set by the interval.
+// INFO: 创建查询某个时间段的Query对象
 func (ng *Engine) NewRangeQuery(ctx context.Context, q storage.Queryable, opts QueryOpts, qs string, start, end time.Time, interval time.Duration) (Query, error) {
 	pExpr, qry := ng.newQuery(q, qs, opts, start, end, interval)
 	finishQueue, err := ng.queueActive(ctx, qry)

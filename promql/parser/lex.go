@@ -246,6 +246,7 @@ const (
 )
 
 // Lexer holds the state of the scanner.
+// INFO: 普米自己实现的词法分析器
 type Lexer struct {
 	input       string       // The string being scanned.
 	state       stateFn      // The next lexing function to enter.

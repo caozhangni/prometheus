@@ -25,6 +25,8 @@ import (
 
 // Labels is a sorted set of labels. Order has to be guaranteed upon
 // instantiation.
+// INFO: 定义标签的集合Labels对象
+// IMPT: 这里使用切片的原因是为了保持标签的顺序，这里需要有序是为了在比较的时候可以通过下标进行比较,效率更高,具体可以看下当前文件的Compare方法
 type Labels []Label
 
 func (ls Labels) Len() int           { return len(ls) }
@@ -326,6 +328,7 @@ func (ls Labels) IsEmpty() bool {
 }
 
 // Range calls f on each label.
+// INFO: 简单的标签遍历封装
 func (ls Labels) Range(f func(l Label)) {
 	for _, l := range ls {
 		f(l)

@@ -36,6 +36,8 @@ import (
 //   - Expressions
 //   - expression types (alphabetical)
 //   - ...
+//
+// INFO: 表示一个抽象语法树的节点
 type Node interface {
 	// String representation of the node that returns the given node when parsed
 	// as part of a valid query.
@@ -51,15 +53,19 @@ type Node interface {
 }
 
 // Statement is a generic interface for all statements.
+// INFO: 表示一个语句
 type Statement interface {
+	// NOTE: 本身就是一个抽象语法树的节点
 	Node
 
 	// PromQLStmt ensures that no other type accidentally implements the interface
+	// INFO: 该方法用于表示其他的类型的Node不会实现此接口
 	PromQLStmt()
 }
 
 // EvalStmt holds an expression and information on the range it should
 // be evaluated on.
+// INFO: Statement的实现
 type EvalStmt struct {
 	Expr Expr // Expression to be evaluated.
 
@@ -72,6 +78,7 @@ type EvalStmt struct {
 	LookbackDelta time.Duration
 }
 
+// INFO: 只是为了表示实现了Statement接口，所以是一个空的函数实现
 func (*EvalStmt) PromQLStmt() {}
 
 // Expr is a generic interface for all expression types.

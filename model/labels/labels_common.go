@@ -34,6 +34,7 @@ const (
 var seps = []byte{'\xff'}
 
 // Label is a key/value pair of strings.
+// INFO: 定义标签模型
 type Label struct {
 	Name, Value string
 }
@@ -107,6 +108,7 @@ func (ls Labels) IsValid() bool {
 }
 
 // Map returns a string map of the labels.
+// INFO: 以map的形式返回标签
 func (ls Labels) Map() map[string]string {
 	m := make(map[string]string)
 	ls.Range(func(l Label) {
