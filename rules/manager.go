@@ -196,12 +196,20 @@ func (m *Manager) Stop() {
 
 // Update the rule manager's state as the config requires. If
 // loading the new rules failed the old rule set is restored.
+// This method will no-op in case the manager is already stopped.
 // INFO: 按配置更新规则管理器的状态,如果读取新的规则失败,那么老的规则将会被保留
 func (m *Manager) Update(interval time.Duration, files []string, externalLabels labels.Labels, externalURL string, groupEvalIterationFunc GroupEvalIterationFunc) error {
 	// INFO: 按配置更新规则管理器的状态,如果读取新的规则失败,那么老的规则将会被保留
 	m.mtx.Lock()
 	// INFO: 按配置更新规则管理器的状态,如果读取新的规则失败,那么老的规则将会被保留
 	defer m.mtx.Unlock()
+
+	// We cannot update a stopped manager
+	select {
+	case <-m.done:
+		return nil
+	default:
+	}
 
 	// INFO: 获取规则组的map
 	groups, errs := m.LoadGroups(interval, externalLabels, externalURL, groupEvalIterationFunc, files...)
