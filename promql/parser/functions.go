@@ -15,6 +15,7 @@ package parser
 
 // Function represents a function of the expression language and is
 // used by function nodes.
+// INFO: 表示表达式中的函数
 type Function struct {
 	Name         string
 	ArgTypes     []ValueType

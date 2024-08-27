@@ -2340,6 +2340,7 @@ func TestTargetScraperScrapeOK(t *testing.T) {
 
 	var protobufParsing bool
 
+	// INFO: 这里会随机选择一个端口启动http服务
 	server := httptest.NewServer(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if protobufParsing {

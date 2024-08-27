@@ -117,7 +117,7 @@ type ManagerOptions struct {
 	OutageTolerance           time.Duration
 	ForGracePeriod            time.Duration
 	ResendDelay               time.Duration
-	GroupLoader               GroupLoader
+	GroupLoader               GroupLoader // INFO: 规则组读取器
 	DefaultRuleQueryOffset    func() time.Duration
 	MaxConcurrentEvals        int64
 	ConcurrentEvalsEnabled    bool
@@ -134,6 +134,7 @@ func NewManager(o *ManagerOptions) *Manager {
 		o.Metrics = NewGroupMetrics(o.Registerer)
 	}
 
+	// INFO: 肯定是FileLoader,因为其实没有配置可以指定GroupLoader的类型
 	if o.GroupLoader == nil {
 		o.GroupLoader = FileLoader{}
 	}
@@ -339,6 +340,7 @@ func (m *Manager) LoadGroups(
 
 			rules := make([]Rule, 0, len(rg.Rules))
 			for _, r := range rg.Rules {
+				// IMPT: 拿到AST的Expr节点
 				expr, err := m.opts.GroupLoader.Parse(r.Expr.Value)
 				if err != nil {
 					return nil, []error{fmt.Errorf("%s: %w", fn, err)}

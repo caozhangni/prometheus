@@ -41,6 +41,7 @@ import (
 type Node interface {
 	// String representation of the node that returns the given node when parsed
 	// as part of a valid query.
+	// INFO: 转换为节点的字符串表示
 	String() string
 
 	// Pretty returns the prettified representation of the node.
@@ -82,13 +83,16 @@ type EvalStmt struct {
 func (*EvalStmt) PromQLStmt() {}
 
 // Expr is a generic interface for all expression types.
+// INFO: 表示一个所有表达式的抽象
 type Expr interface {
 	Node
 
 	// Type returns the type the expression evaluates to. It does not perform
 	// in-depth checks as this is done at parsing-time.
+	// INFO: 返回Expr查询到的值的类型
 	Type() ValueType
 	// PromQLExpr ensures that no other types accidentally implement the interface.
+	// INFO: 确保不会有其他的对象意外的实现了这个接口
 	PromQLExpr()
 }
 
@@ -96,7 +100,9 @@ type Expr interface {
 type Expressions []Expr
 
 // AggregateExpr represents an aggregation operation on a Vector.
+// INFO: 聚合操作相关的表达式(比如sum，max等)
 type AggregateExpr struct {
+	// INFO: 聚合操作符
 	Op       ItemType // The used aggregation operation.
 	Expr     Expr     // The Vector expression over which is aggregated.
 	Param    Expr     // Parameter used by some aggregators.
@@ -106,9 +112,12 @@ type AggregateExpr struct {
 }
 
 // BinaryExpr represents a binary expression between two child expressions.
+// INFO: 表示一个二元操作表达式
 type BinaryExpr struct {
-	Op       ItemType // The operation of the expression.
-	LHS, RHS Expr     // The operands on the respective sides of the operator.
+	Op ItemType // The operation of the expression.
+
+	// INFO: 左侧的表达式和右侧的表达式
+	LHS, RHS Expr // The operands on the respective sides of the operator.
 
 	// The matching behavior for the operation if both operands are Vectors.
 	// If they are not this field is nil.
@@ -197,6 +206,7 @@ func (e *StepInvariantExpr) PositionRange() posrange.PositionRange {
 }
 
 // VectorSelector represents a Vector selection.
+// INFO: 向量选择器(也是一个Expr的实现)
 type VectorSelector struct {
 	Name string
 	// OriginalOffset is the actual offset that was set in the query.
@@ -213,7 +223,8 @@ type VectorSelector struct {
 
 	// The unexpanded seriesSet populated at query preparation time.
 	UnexpandedSeriesSet storage.SeriesSet
-	Series              []storage.Series
+	// INFO: 保存的时序数据
+	Series []storage.Series
 
 	PosRange posrange.PositionRange
 }
@@ -306,6 +317,7 @@ type VectorMatching struct {
 // invoked for each node with the path leading to the node provided additionally.
 // If the result visitor w is not nil and no error, Walk visits each of the children
 // of node with the visitor w, followed by a call of w.Visit(nil, nil).
+// INFO: 定义访问者接口
 type Visitor interface {
 	Visit(node Node, path []Node) (w Visitor, err error)
 }
@@ -316,6 +328,7 @@ type Visitor interface {
 // invoked recursively with visitor w for each of the non-nil children of node,
 // followed by a call of w.Visit(nil), returning an error
 // As the tree is descended the path of previous nodes is provided.
+// INFO: 遍历AST
 func Walk(v Visitor, node Node, path []Node) error {
 	var err error
 	if v, err = v.Visit(node, path); v == nil || err != nil {
@@ -345,6 +358,8 @@ func ExtractSelectors(expr Expr) [][]*labels.Matcher {
 	return selectors
 }
 
+// INFO: 访问者的实现
+// INFO: insepctor本身也是函数的衍生类型
 type inspector func(Node, []Node) error
 
 func (f inspector) Visit(node Node, path []Node) (Visitor, error) {

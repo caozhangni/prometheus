@@ -23,6 +23,7 @@ import (
 )
 
 // Item represents a token or text string returned from the scanner.
+// INFO: 表示第一个token
 type Item struct {
 	Typ ItemType     // The type of this Item.
 	Pos posrange.Pos // The starting position, in bytes, of this Item in the input string.
@@ -92,6 +93,7 @@ func (i ItemType) IsSetOperator() bool {
 	return false
 }
 
+// INFO: token的类型
 type ItemType int
 
 // This is a list of all keywords in PromQL.

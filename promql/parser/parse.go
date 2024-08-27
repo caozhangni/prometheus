@@ -48,6 +48,7 @@ type Parser interface {
 
 // INFO: 解析器对象
 type parser struct {
+	// INFO: 普米自己实现的词法分析器
 	lex Lexer
 
 	inject    ItemType
@@ -60,6 +61,7 @@ type parser struct {
 	// of certain expressions its end position is stored here.
 	lastClosing posrange.Pos
 
+	// INFO: 普米基于goyacc实现的语法分析器
 	yyParser yyParserImpl
 
 	generatedParserResult interface{}
@@ -86,7 +88,7 @@ func NewParser(input string, opts ...Opt) *parser { //nolint:revive // unexporte
 	p.generatedParserResult = nil
 
 	// Clear lexer struct before reusing.
-	// INFO: 创建词法分析器
+	// INFO: 根据解析语句的内容创建词法分析器
 	p.lex = Lexer{
 		input: input,
 		state: lexStatements,
@@ -105,9 +107,11 @@ func NewParser(input string, opts ...Opt) *parser { //nolint:revive // unexporte
 func (p *parser) ParseExpr() (expr Expr, err error) {
 	defer p.recover(&err)
 
+	// INFO: 进行解析
 	parseResult := p.parseGenerated(START_EXPRESSION)
 
 	if parseResult != nil {
+		// INFO: 解析结果断言为AST的表达式类型
 		expr = parseResult.(Expr)
 	}
 

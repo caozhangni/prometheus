@@ -684,6 +684,7 @@ func appender(app storage.Appender, sampleLimit, bucketLimit int, maxSchema int3
 }
 
 // A scraper retrieves samples and accepts a status report at the end.
+// INFO: 抓取器interface
 type scraper interface {
 	scrape(ctx context.Context) (*http.Response, error)
 	readResponse(ctx context.Context, resp *http.Response, w io.Writer) (string, error)
@@ -692,6 +693,7 @@ type scraper interface {
 }
 
 // targetScraper implements the scraper interface for a target.
+// INFO: scraper的实现
 type targetScraper struct {
 	*Target
 

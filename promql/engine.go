@@ -467,7 +467,7 @@ func (ng *Engine) NewInstantQuery(ctx context.Context, q storage.Queryable, opts
 		return nil, err
 	}
 	defer finishQueue()
-	// INFO: 创建表达式对象
+	// INFO: 解析字符串为AST的表达式节点
 	expr, err := parser.ParseExpr(qs)
 	if err != nil {
 		return nil, err
@@ -475,6 +475,7 @@ func (ng *Engine) NewInstantQuery(ctx context.Context, q storage.Queryable, opts
 	if err := ng.validateOpts(expr); err != nil {
 		return nil, err
 	}
+	// NOTE: 替换掉qry中EvalStmt的Expr对象
 	*pExpr = PreprocessExpr(expr, ts, ts)
 
 	return qry, nil
@@ -704,6 +705,7 @@ func durationMilliseconds(d time.Duration) int64 {
 func (ng *Engine) execEvalStmt(ctx context.Context, query *query, s *parser.EvalStmt) (parser.Value, annotations.Annotations, error) {
 	prepareSpanTimer, ctxPrepare := query.stats.GetSpanTimer(ctx, stats.QueryPreparationTime, ng.metrics.queryPrepareTime)
 	mint, maxt := FindMinMaxTime(s)
+	// IMPT: 这里真正从存储中查询了数据
 	querier, err := query.queryable.Querier(mint, maxt)
 	if err != nil {
 		prepareSpanTimer.Finish()
