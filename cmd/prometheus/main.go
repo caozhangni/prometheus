@@ -167,6 +167,7 @@ type flagConfig struct {
 	queryConcurrency    int
 	queryMaxSamples     int
 	RemoteFlushDeadline model.Duration
+	nameEscapingScheme  string
 
 	// INFO: 特性列表,通常是实验性质的,比如agent模式
 	featureList   []string
@@ -250,6 +251,12 @@ func (c *flagConfig) setFeatureListOptions(logger log.Logger) error {
 				config.DefaultConfig.GlobalConfig.ScrapeProtocols = config.DefaultProtoFirstScrapeProtocols
 				config.DefaultGlobalConfig.ScrapeProtocols = config.DefaultProtoFirstScrapeProtocols
 				level.Info(logger).Log("msg", "Experimental created timestamp zero ingestion enabled. Changed default scrape_protocols to prefer PrometheusProto format.", "global.scrape_protocols", fmt.Sprintf("%v", config.DefaultGlobalConfig.ScrapeProtocols))
+			case "delayed-compaction":
+				c.tsdb.EnableDelayedCompaction = true
+				level.Info(logger).Log("msg", "Experimental delayed compaction is enabled.")
+			case "utf8-names":
+				model.NameValidationScheme = model.UTF8Validation
+				level.Info(logger).Log("msg", "Experimental UTF-8 support enabled")
 			case "":
 				continue
 			case "promql-at-modifier", "promql-negative-offset":
@@ -317,8 +324,8 @@ func main() {
 	a.Flag("config.file", "Prometheus configuration file path.").
 		Default("prometheus.yml").StringVar(&cfg.configFile)
 
-	a.Flag("web.listen-address", "Address to listen on for UI, API, and telemetry.").
-		Default("0.0.0.0:9090").StringVar(&cfg.web.ListenAddress)
+	a.Flag("web.listen-address", "Address to listen on for UI, API, and telemetry. Can be repeated.").
+		Default("0.0.0.0:9090").StringsVar(&cfg.web.ListenAddresses)
 
 	a.Flag("auto-gomemlimit.ratio", "The ratio of reserved GOMEMLIMIT memory to the detected maximum container or system memory").
 		Default("0.9").FloatVar(&cfg.memlimitRatio)
@@ -332,7 +339,7 @@ func main() {
 		"Maximum duration before timing out read of the request, and closing idle connections.").
 		Default("5m").SetValue(&cfg.webTimeout)
 
-	a.Flag("web.max-connections", "Maximum number of simultaneous connections.").
+	a.Flag("web.max-connections", "Maximum number of simultaneous connections across all listeners.").
 		Default("512").IntVar(&cfg.web.MaxConnections)
 
 	a.Flag("web.external-url",
@@ -407,6 +414,9 @@ func main() {
 	var b bool
 	serverOnlyFlag(a, "storage.tsdb.allow-overlapping-blocks", "[DEPRECATED] This flag has no effect. Overlapping blocks are enabled by default now.").
 		Default("true").Hidden().BoolVar(&b)
+
+	serverOnlyFlag(a, "storage.tsdb.allow-overlapping-compaction", "Allow compaction of overlapping blocks. If set to false, TSDB stops vertical compaction and leaves overlapping blocks there. The use case is to let another component handle the compaction of overlapping blocks.").
+		Default("true").Hidden().BoolVar(&cfg.tsdb.EnableOverlappingCompaction)
 
 	serverOnlyFlag(a, "storage.tsdb.wal-compression", "Compress the tsdb WAL.").
 		Hidden().Default("true").BoolVar(&cfg.tsdb.WALCompression)
@@ -503,9 +513,11 @@ func main() {
 	a.Flag("scrape.discovery-reload-interval", "Interval used by scrape manager to throttle target groups updates.").
 		Hidden().Default("5s").SetValue(&cfg.scrape.DiscoveryReloadInterval)
 
+	a.Flag("scrape.name-escaping-scheme", `Method for escaping legacy invalid names when sending to Prometheus that does not support UTF-8. Can be one of "values", "underscores", or "dots".`).Default(scrape.DefaultNameEscapingScheme.String()).StringVar(&cfg.nameEscapingScheme)
+
 	// INFO: 启用一些新的特性,如agent模式,这些特性一般都是实验性质的,功能上并不稳定
 	// 可通过查看官方文档https://prometheus.io/docs/prometheus/latest/feature_flags/了解
-	a.Flag("enable-feature", "Comma separated feature names to enable. Valid options: agent, auto-gomemlimit, exemplar-storage, expand-external-labels, memory-snapshot-on-shutdown, promql-per-step-stats, promql-experimental-functions, remote-write-receiver (DEPRECATED), extra-scrape-metrics, new-service-discovery-manager, auto-gomaxprocs, no-default-scrape-port, native-histograms, otlp-write-receiver, created-timestamp-zero-ingestion, concurrent-rule-eval. See https://prometheus.io/docs/prometheus/latest/feature_flags/ for more details.").
+	a.Flag("enable-feature", "Comma separated feature names to enable. Valid options: agent, auto-gomemlimit, exemplar-storage, expand-external-labels, memory-snapshot-on-shutdown, promql-per-step-stats, promql-experimental-functions, remote-write-receiver (DEPRECATED), extra-scrape-metrics, new-service-discovery-manager, auto-gomaxprocs, no-default-scrape-port, native-histograms, otlp-write-receiver, created-timestamp-zero-ingestion, concurrent-rule-eval, delayed-compaction, utf8-names. See https://prometheus.io/docs/prometheus/latest/feature_flags/ for more details.").
 		Default("").StringsVar(&cfg.featureList)
 
 	// INFO: 添加日志配置的命令行选项到a
@@ -537,6 +549,15 @@ func main() {
 		os.Exit(1)
 	}
 
+	if cfg.nameEscapingScheme != "" {
+		scheme, err := model.ToEscapingScheme(cfg.nameEscapingScheme)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, `Invalid name escaping scheme: %q; Needs to be one of "values", "underscores", or "dots"`, cfg.nameEscapingScheme)
+			os.Exit(1)
+		}
+		model.NameEscapingScheme = scheme
+	}
+
 	// INFO: 在agent模式下配置了server模式的命令行选项,则直接退出
 	if agentMode && len(serverOnlyFlags) > 0 {
 		fmt.Fprintf(os.Stderr, "The following flag(s) can not be used in agent mode: %q", serverOnlyFlags)
@@ -559,7 +580,7 @@ func main() {
 		localStoragePath = cfg.agentStoragePath
 	}
 
-	cfg.web.ExternalURL, err = computeExternalURL(cfg.prometheusURL, cfg.web.ListenAddress)
+	cfg.web.ExternalURL, err = computeExternalURL(cfg.prometheusURL, cfg.web.ListenAddresses[0])
 	if err != nil {
 		fmt.Fprintln(os.Stderr, fmt.Errorf("parse external URL %q: %w", cfg.prometheusURL, err))
 		os.Exit(2)
@@ -1026,10 +1047,9 @@ func main() {
 		})
 	}
 
-	//
-	listener, err := webHandler.Listener()
+	listeners, err := webHandler.Listeners()
 	if err != nil {
-		level.Error(logger).Log("msg", "Unable to start web listener", "err", err)
+		level.Error(logger).Log("msg", "Unable to start web listeners", "err", err)
 		os.Exit(1)
 	}
 
@@ -1346,7 +1366,7 @@ func main() {
 		g.Add(
 			func() error {
 				// INFO: 运行web服务
-				if err := webHandler.Run(ctxWeb, listener, *webConfig); err != nil {
+				if err := webHandler.Run(ctxWeb, listeners, *webConfig); err != nil {
 					return fmt.Errorf("error starting web server: %w", err)
 				}
 				return nil
@@ -1800,6 +1820,8 @@ type tsdbOptions struct {
 	MaxExemplars                   int64
 	EnableMemorySnapshotOnShutdown bool
 	EnableNativeHistograms         bool
+	EnableDelayedCompaction        bool
+	EnableOverlappingCompaction    bool
 }
 
 func (opts tsdbOptions) ToTSDBOptions() tsdb.Options {
@@ -1820,7 +1842,8 @@ func (opts tsdbOptions) ToTSDBOptions() tsdb.Options {
 		EnableMemorySnapshotOnShutdown: opts.EnableMemorySnapshotOnShutdown,
 		EnableNativeHistograms:         opts.EnableNativeHistograms,
 		OutOfOrderTimeWindow:           opts.OutOfOrderTimeWindow,
-		EnableOverlappingCompaction:    true,
+		EnableDelayedCompaction:        opts.EnableDelayedCompaction,
+		EnableOverlappingCompaction:    opts.EnableOverlappingCompaction,
 	}
 }
 
