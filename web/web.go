@@ -65,15 +65,24 @@ import (
 	"github.com/prometheus/prometheus/web/ui"
 )
 
-// Paths that are handled by the React / Reach router that should all be served the main React app's index.html.
+// Paths handled by the React router that should all serve the main React app's index.html,
+// no matter if agent mode is enabled or not.
 // INFO: 前端占用的路由(Server和Agent模式下公用)
-var reactRouterPaths = []string{
+var oldUIReactRouterPaths = []string{
 	"/config",
 	"/flags",
 	"/service-discovery",
 	"/status",
 	"/targets",
-	"/starting",
+}
+
+var newUIReactRouterPaths = []string{
+	"/config",
+	"/flags",
+	"/service-discovery",
+	"/alertmanager-discovery",
+	"/status",
+	"/targets",
 }
 
 // Paths that are handled by the React router when the Agent mode is set.
@@ -83,13 +92,28 @@ var reactRouterAgentPaths = []string{
 }
 
 // Paths that are handled by the React router when the Agent mode is not set.
-// INFO: 前端占用的路由(Server模式下独有)
-var reactRouterServerPaths = []string{
+// INFO: 老的前端占用路由(Server模式下独有)
+var oldUIReactRouterServerPaths = []string{
 	"/alerts",
 	"/graph",
 	"/rules",
 	"/tsdb-status",
 }
+
+var newUIReactRouterServerPaths = []string{
+	"/alerts",
+	"/query", // The old /graph redirects to /query on the server side.
+	"/rules",
+	"/tsdb-status",
+}
+
+type ReadyStatus uint32
+
+const (
+	NotReady ReadyStatus = iota
+	Ready
+	Stopping
+)
 
 // withStackTrace logs the stack trace in case the request panics. The function
 // will re-raise the error which will then be handled by the net/http package.
@@ -262,6 +286,7 @@ type Options struct {
 	UserAssetsPath             string
 	ConsoleTemplatesPath       string
 	ConsoleLibrariesPath       string
+	UseOldUI                   bool
 	EnableLifecycle            bool
 	EnableAdminAPI             bool
 	PageTitle                  string
@@ -325,7 +350,7 @@ func New(logger log.Logger, o *Options) *Handler {
 
 		now: model.Now,
 	}
-	h.SetReady(false)
+	h.SetReady(NotReady)
 
 	factorySPr := func(_ context.Context) api_v1.ScrapePoolsRetriever { return h.scrapeManager }
 	factoryTr := func(_ context.Context) api_v1.TargetRetriever { return h.scrapeManager }
@@ -379,7 +404,10 @@ func New(logger log.Logger, o *Options) *Handler {
 	}
 
 	// INFO: 指定访问根路径时跳转到的前端路径
-	homePage := "/graph"
+	homePage := "/query"
+	if o.UseOldUI {
+		homePage = "/graph"
+	}
 	// INFO: 代理模式下会有不同
 	if o.IsAgent {
 		homePage = "/agent"
@@ -391,6 +419,17 @@ func New(logger log.Logger, o *Options) *Handler {
 	router.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, path.Join(o.ExternalURL.Path, homePage), http.StatusFound)
 	})
+
+	if !o.UseOldUI {
+		router.Get("/graph", func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, path.Join(o.ExternalURL.Path, "/query?"+r.URL.RawQuery), http.StatusFound)
+		})
+	}
+
+	reactAssetsRoot := "/static/mantine-ui"
+	if h.options.UseOldUI {
+		reactAssetsRoot = "/static/react-app"
+	}
 
 	// The console library examples at 'console_libraries/prom.lib' still depend on old asset files being served under `classic`.
 	// INFO: 老的资产文件路由注册(/classic开头)
@@ -418,7 +457,8 @@ func New(logger log.Logger, o *Options) *Handler {
 	// IMPT: 所有对前端路由的直接访问都会返回主页的html(然后在前端的逻辑里面会访问具体前端路由页面)
 	serveReactApp := func(w http.ResponseWriter, r *http.Request) {
 		// INFO: 读取主页html文件
-		f, err := ui.Assets.Open("/static/react/index.html")
+		indexPath := reactAssetsRoot + "/index.html"
+		f, err := ui.Assets.Open(indexPath)
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			fmt.Fprintf(w, "Error opening React index.html: %v", err)
@@ -436,12 +476,20 @@ func New(logger log.Logger, o *Options) *Handler {
 		replacedIdx = bytes.ReplaceAll(replacedIdx, []byte("TITLE_PLACEHOLDER"), []byte(h.options.PageTitle))
 		replacedIdx = bytes.ReplaceAll(replacedIdx, []byte("AGENT_MODE_PLACEHOLDER"), []byte(strconv.FormatBool(h.options.IsAgent)))
 		replacedIdx = bytes.ReplaceAll(replacedIdx, []byte("READY_PLACEHOLDER"), []byte(strconv.FormatBool(h.isReady())))
+		replacedIdx = bytes.ReplaceAll(replacedIdx, []byte("LOOKBACKDELTA_PLACEHOLDER"), []byte(model.Duration(h.options.LookbackDelta).String()))
 		// IMPT: 返回的是主页的html
 		w.Write(replacedIdx)
 	}
 
 	// Serve the React app.
-	// INFO: 设置前端路由
+	reactRouterPaths := newUIReactRouterPaths
+	reactRouterServerPaths := newUIReactRouterServerPaths
+	if h.options.UseOldUI {
+		reactRouterPaths = oldUIReactRouterPaths
+		reactRouterServerPaths = oldUIReactRouterServerPaths
+	}
+
+	// INFO: 设置前前端路由
 	for _, p := range reactRouterPaths {
 		router.Get(p, serveReactApp)
 	}
@@ -458,8 +506,8 @@ func New(logger log.Logger, o *Options) *Handler {
 
 	// The favicon and manifest are bundled as part of the React app, but we want to serve
 	// them on the root.
-	for _, p := range []string{"/favicon.ico", "/manifest.json"} {
-		assetPath := "/static/react" + p
+	for _, p := range []string{"/favicon.svg", "/favicon.ico", "/manifest.json"} {
+		assetPath := reactAssetsRoot + p
 		router.Get(p, func(w http.ResponseWriter, r *http.Request) {
 			r.URL.Path = assetPath
 			fs := server.StaticFileServer(ui.Assets)
@@ -467,10 +515,14 @@ func New(logger log.Logger, o *Options) *Handler {
 		})
 	}
 
+	reactStaticAssetsDir := "/assets"
+	if h.options.UseOldUI {
+		reactStaticAssetsDir = "/static"
+	}
 	// Static files required by the React app.
 	// INFO: 设置前端使用的静态文件路由
-	router.Get("/static/*filepath", func(w http.ResponseWriter, r *http.Request) {
-		r.URL.Path = path.Join("/static/react/static", route.Param(r.Context(), "filepath"))
+	router.Get(reactStaticAssetsDir+"/*filepath", func(w http.ResponseWriter, r *http.Request) {
+		r.URL.Path = path.Join(reactAssetsRoot+reactStaticAssetsDir, route.Param(r.Context(), "filepath"))
 		fs := server.StaticFileServer(ui.Assets)
 		// NOTE: 注意这里委派了静态文件服务来处理这个请求
 		fs.ServeHTTP(w, r)
@@ -559,30 +611,39 @@ func serveDebug(w http.ResponseWriter, req *http.Request) {
 }
 
 // SetReady sets the ready status of our web Handler.
-func (h *Handler) SetReady(v bool) {
-	if v {
-		h.ready.Store(1)
+func (h *Handler) SetReady(v ReadyStatus) {
+	if v == Ready {
+		h.ready.Store(uint32(Ready))
 		h.metrics.readyStatus.Set(1)
 		return
 	}
 
-	h.ready.Store(0)
+	h.ready.Store(uint32(v))
 	h.metrics.readyStatus.Set(0)
 }
 
 // Verifies whether the server is ready or not.
 func (h *Handler) isReady() bool {
-	return h.ready.Load() > 0
+	return ReadyStatus(h.ready.Load()) == Ready
 }
 
 // Checks if server is ready, calls f if it is, returns 503 if it is not.
 func (h *Handler) testReady(f http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if h.isReady() {
+		switch ReadyStatus(h.ready.Load()) {
+		case Ready:
 			f(w, r)
-		} else {
+		case NotReady:
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Header().Set("X-Prometheus-Stopping", "false")
+			fmt.Fprintf(w, "Service Unavailable")
+		case Stopping:
+			w.Header().Set("X-Prometheus-Stopping", "true")
 			w.WriteHeader(http.StatusServiceUnavailable)
 			fmt.Fprintf(w, "Service Unavailable")
+		default:
+			w.WriteHeader(http.StatusInternalServerError)
+			fmt.Fprintf(w, "Unknown state")
 		}
 	}
 }

@@ -63,8 +63,6 @@ import (
 
 	"github.com/prometheus/prometheus/config"
 	"github.com/prometheus/prometheus/discovery"
-	"github.com/prometheus/prometheus/discovery/legacymanager"
-	"github.com/prometheus/prometheus/discovery/targetgroup"
 	"github.com/prometheus/prometheus/model/exemplar"
 	"github.com/prometheus/prometheus/model/histogram"
 	"github.com/prometheus/prometheus/model/labels"
@@ -113,6 +111,8 @@ var (
 
 // NOTE: 初始化函数,在调用main函数之前执行
 func init() {
+	// This can be removed when the default validation scheme in common is updated.
+	model.NameValidationScheme = model.UTF8Validation
 	// NOTE: 这里调用了普米客户端将用于采集版本信息的Collector注册进来
 	// 具体指标暴露(即/metrics接口)的代码在web/web.go中
 	prometheus.MustRegister(versioncollector.NewCollector(strings.ReplaceAll(appName, "-", "_")))
@@ -169,13 +169,15 @@ type flagConfig struct {
 	RemoteFlushDeadline model.Duration
 	nameEscapingScheme  string
 
+	enableAutoReload   bool
+	autoReloadInterval model.Duration
+
 	// INFO: 特性列表,通常是实验性质的,比如agent模式
 	featureList   []string
 	memlimitRatio float64
 	// These options are extracted from featureList
 	// for ease of use.
 	enableExpandExternalLabels bool
-	enableNewSDManager         bool
 	enablePerStepStats         bool
 	enableAutoGOMAXPROCS       bool
 	enableAutoGOMEMLIMIT       bool
@@ -195,9 +197,6 @@ func (c *flagConfig) setFeatureListOptions(logger log.Logger) error {
 		opts := strings.Split(f, ",")
 		for _, o := range opts {
 			switch o {
-			case "remote-write-receiver":
-				c.web.EnableRemoteWriteReceiver = true
-				level.Warn(logger).Log("msg", "Remote write receiver enabled via feature flag remote-write-receiver. This is DEPRECATED. Use --web.enable-remote-write-receiver.")
 			case "otlp-write-receiver":
 				c.web.EnableOTLPWriteReceiver = true
 				level.Info(logger).Log("msg", "Experimental OTLP write receiver enabled")
@@ -216,18 +215,18 @@ func (c *flagConfig) setFeatureListOptions(logger log.Logger) error {
 			case "metadata-wal-records":
 				c.scrape.AppendMetadata = true
 				level.Info(logger).Log("msg", "Experimental metadata records in WAL enabled, required for remote write 2.0")
-			case "new-service-discovery-manager":
-				c.enableNewSDManager = true
-				level.Info(logger).Log("msg", "Experimental service discovery manager")
-			case "agent":
-				agentMode = true
-				level.Info(logger).Log("msg", "Experimental agent mode enabled.")
 			case "promql-per-step-stats":
 				c.enablePerStepStats = true
 				level.Info(logger).Log("msg", "Experimental per-step statistics reporting")
 			case "auto-gomaxprocs":
 				c.enableAutoGOMAXPROCS = true
 				level.Info(logger).Log("msg", "Automatically set GOMAXPROCS to match Linux container CPU quota")
+			case "auto-reload-config":
+				c.enableAutoReload = true
+				if s := time.Duration(c.autoReloadInterval).Seconds(); s > 0 && s < 1 {
+					c.autoReloadInterval, _ = model.ParseDuration("1s")
+				}
+				level.Info(logger).Log("msg", fmt.Sprintf("Enabled automatic configuration file reloading. Checking for configuration changes every %s.", c.autoReloadInterval))
 			case "auto-gomemlimit":
 				c.enableAutoGOMEMLIMIT = true
 				level.Info(logger).Log("msg", "Automatically set GOMEMLIMIT to match Linux container or system memory limit")
@@ -247,6 +246,9 @@ func (c *flagConfig) setFeatureListOptions(logger log.Logger) error {
 				config.DefaultConfig.GlobalConfig.ScrapeProtocols = config.DefaultProtoFirstScrapeProtocols
 				config.DefaultGlobalConfig.ScrapeProtocols = config.DefaultProtoFirstScrapeProtocols
 				level.Info(logger).Log("msg", "Experimental native histogram support enabled. Changed default scrape_protocols to prefer PrometheusProto format.", "global.scrape_protocols", fmt.Sprintf("%v", config.DefaultGlobalConfig.ScrapeProtocols))
+			case "ooo-native-histograms":
+				c.tsdb.EnableOOONativeHistograms = true
+				level.Info(logger).Log("msg", "Experimental out-of-order native histogram ingestion enabled. This will only take effect if OutOfOrderTimeWindow is > 0 and if EnableNativeHistograms = true")
 			case "created-timestamp-zero-ingestion":
 				c.scrape.EnableCreatedTimestampZeroIngestion = true
 				// Change relevant global variables. Hacky, but it's hard to pass a new option or default to unmarshallers.
@@ -259,13 +261,11 @@ func (c *flagConfig) setFeatureListOptions(logger log.Logger) error {
 			case "promql-delayed-name-removal":
 				c.promqlEnableDelayedNameRemoval = true
 				level.Info(logger).Log("msg", "Experimental PromQL delayed name removal enabled.")
-			case "utf8-names":
-				model.NameValidationScheme = model.UTF8Validation
-				level.Info(logger).Log("msg", "Experimental UTF-8 support enabled")
 			case "":
 				continue
-			case "promql-at-modifier", "promql-negative-offset":
-				level.Warn(logger).Log("msg", "This option for --enable-feature is now permanently enabled and therefore a no-op.", "option", o)
+			case "old-ui":
+				c.web.UseOldUI = true
+				level.Info(logger).Log("msg", "Serving previous version of the Prometheus web UI.")
 			default:
 				level.Warn(logger).Log("msg", "Unknown option for --enable-feature", "option", o)
 			}
@@ -282,11 +282,6 @@ func main() {
 		runtime.SetBlockProfileRate(20)
 		runtime.SetMutexProfileFraction(20)
 	}
-
-	var (
-		oldFlagRetentionDuration model.Duration
-		newFlagRetentionDuration model.Duration
-	)
 
 	// Unregister the default GoCollector, and reregister with our defaults.
 	if prometheus.Unregister(collectors.NewGoCollector()) {
@@ -328,6 +323,9 @@ func main() {
 
 	a.Flag("config.file", "Prometheus configuration file path.").
 		Default("prometheus.yml").StringVar(&cfg.configFile)
+
+	a.Flag("config.auto-reload-interval", "Specifies the interval for checking and automatically reloading the Prometheus configuration file upon detecting changes.").
+		Default("30s").SetValue(&cfg.autoReloadInterval)
 
 	a.Flag("web.listen-address", "Address to listen on for UI, API, and telemetry. Can be repeated.").
 		Default("0.0.0.0:9090").StringsVar(&cfg.web.ListenAddresses)
@@ -403,25 +401,14 @@ func main() {
 		"Size at which to split the tsdb WAL segment files. Example: 100MB").
 		Hidden().PlaceHolder("<bytes>").BytesVar(&cfg.tsdb.WALSegmentSize)
 
-	serverOnlyFlag(a, "storage.tsdb.retention", "[DEPRECATED] How long to retain samples in storage. This flag has been deprecated, use \"storage.tsdb.retention.time\" instead.").
-		SetValue(&oldFlagRetentionDuration)
-
-	serverOnlyFlag(a, "storage.tsdb.retention.time", "How long to retain samples in storage. When this flag is set it overrides \"storage.tsdb.retention\". If neither this flag nor \"storage.tsdb.retention\" nor \"storage.tsdb.retention.size\" is set, the retention time defaults to "+defaultRetentionString+". Units Supported: y, w, d, h, m, s, ms.").
-		SetValue(&newFlagRetentionDuration)
+	serverOnlyFlag(a, "storage.tsdb.retention.time", "How long to retain samples in storage. If neither this flag nor \"storage.tsdb.retention.size\" is set, the retention time defaults to "+defaultRetentionString+". Units Supported: y, w, d, h, m, s, ms.").
+		SetValue(&cfg.tsdb.RetentionDuration)
 
 	serverOnlyFlag(a, "storage.tsdb.retention.size", "Maximum number of bytes that can be stored for blocks. A unit is required, supported units: B, KB, MB, GB, TB, PB, EB. Ex: \"512MB\". Based on powers-of-2, so 1KB is 1024B.").
 		BytesVar(&cfg.tsdb.MaxBytes)
 
 	serverOnlyFlag(a, "storage.tsdb.no-lockfile", "Do not create lockfile in data directory.").
 		Default("false").BoolVar(&cfg.tsdb.NoLockfile)
-
-	// TODO: Remove in Prometheus 3.0.
-	var b bool
-	serverOnlyFlag(a, "storage.tsdb.allow-overlapping-blocks", "[DEPRECATED] This flag has no effect. Overlapping blocks are enabled by default now.").
-		Default("true").Hidden().BoolVar(&b)
-
-	serverOnlyFlag(a, "storage.tsdb.allow-overlapping-compaction", "Allow compaction of overlapping blocks. If set to false, TSDB stops vertical compaction and leaves overlapping blocks there. The use case is to let another component handle the compaction of overlapping blocks.").
-		Default("true").Hidden().BoolVar(&cfg.tsdb.EnableOverlappingCompaction)
 
 	serverOnlyFlag(a, "storage.tsdb.wal-compression", "Compress the tsdb WAL.").
 		Hidden().Default("true").BoolVar(&cfg.tsdb.WALCompression)
@@ -499,9 +486,6 @@ func main() {
 	serverOnlyFlag(a, "alertmanager.drain-notification-queue-on-shutdown", "Send any outstanding Alertmanager notifications when shutting down. If false, any outstanding Alertmanager notifications will be dropped when shutting down.").
 		Default("true").BoolVar(&cfg.notifier.DrainOnShutdown)
 
-	// TODO: Remove in Prometheus 3.0.
-	alertmanagerTimeout := a.Flag("alertmanager.timeout", "[DEPRECATED] This flag has no effect.").Hidden().String()
-
 	// INFO: 即在查询当前最新值的时候，只要发现这个参数指定的时间段内有数据，就取最新的那个点返回，这个时间段内没数据，就不返回了
 	serverOnlyFlag(a, "query.lookback-delta", "The maximum lookback duration for retrieving metrics during expression evaluations and federation.").
 		Default("5m").SetValue(&cfg.lookbackDelta)
@@ -518,12 +502,12 @@ func main() {
 	a.Flag("scrape.discovery-reload-interval", "Interval used by scrape manager to throttle target groups updates.").
 		Hidden().Default("5s").SetValue(&cfg.scrape.DiscoveryReloadInterval)
 
-	a.Flag("scrape.name-escaping-scheme", `Method for escaping legacy invalid names when sending to Prometheus that does not support UTF-8. Can be one of "values", "underscores", or "dots".`).Default(scrape.DefaultNameEscapingScheme.String()).StringVar(&cfg.nameEscapingScheme)
-
 	// INFO: 启用一些新的特性,如agent模式,这些特性一般都是实验性质的,功能上并不稳定
 	// 可通过查看官方文档https://prometheus.io/docs/prometheus/latest/feature_flags/了解
-	a.Flag("enable-feature", "Comma separated feature names to enable. Valid options: agent, auto-gomaxprocs, auto-gomemlimit, concurrent-rule-eval, created-timestamp-zero-ingestion, delayed-compaction, exemplar-storage, expand-external-labels, extra-scrape-metrics, memory-snapshot-on-shutdown, native-histograms, new-service-discovery-manager, no-default-scrape-port, otlp-write-receiver, promql-experimental-functions, promql-delayed-name-removal, promql-per-step-stats, remote-write-receiver (DEPRECATED), utf8-names. See https://prometheus.io/docs/prometheus/latest/feature_flags/ for more details.").
+	a.Flag("enable-feature", "Comma separated feature names to enable. Valid options: auto-gomemlimit, exemplar-storage, expand-external-labels, memory-snapshot-on-shutdown, promql-per-step-stats, promql-experimental-functions, extra-scrape-metrics, auto-gomaxprocs, no-default-scrape-port, native-histograms, otlp-write-receiver, created-timestamp-zero-ingestion, concurrent-rule-eval, delayed-compaction, old-ui. See https://prometheus.io/docs/prometheus/latest/feature_flags/ for more details.").
 		Default("").StringsVar(&cfg.featureList)
+
+	a.Flag("agent", "Run Prometheus in 'Agent mode'.").BoolVar(&agentMode)
 
 	// INFO: 添加日志配置的命令行选项到a
 	// 目前只有log.level和log.format两个flag
@@ -597,10 +581,6 @@ func main() {
 		os.Exit(2)
 	}
 
-	if *alertmanagerTimeout != "" {
-		level.Warn(logger).Log("msg", "The flag --alertmanager.timeout has no effect and will be removed in the future.")
-	}
-
 	// Throw error for invalid config before starting other components.
 	var cfgFile *config.Config
 	if cfgFile, err = config.LoadFile(cfg.configFile, agentMode, false, log.NewNopLogger()); err != nil {
@@ -647,17 +627,6 @@ func main() {
 	cfg.web.RoutePrefix = "/" + strings.Trim(cfg.web.RoutePrefix, "/")
 
 	if !agentMode {
-		// Time retention settings.
-		if oldFlagRetentionDuration != 0 {
-			level.Warn(logger).Log("deprecation_notice", "'storage.tsdb.retention' flag is deprecated use 'storage.tsdb.retention.time' instead.")
-			cfg.tsdb.RetentionDuration = oldFlagRetentionDuration
-		}
-
-		// When the new flag is set it takes precedence.
-		if newFlagRetentionDuration != 0 {
-			cfg.tsdb.RetentionDuration = newFlagRetentionDuration
-		}
-
 		if cfg.tsdb.RetentionDuration == 0 && cfg.tsdb.MaxBytes == 0 {
 			cfg.tsdb.RetentionDuration = defaultRetentionDuration
 			level.Info(logger).Log("msg", "No time or size retention was set so using the default time retention", "duration", defaultRetentionDuration)
@@ -737,8 +706,8 @@ func main() {
 
 		ctxScrape, cancelScrape = context.WithCancel(context.Background())
 		ctxNotify, cancelNotify = context.WithCancel(context.Background())
-		discoveryManagerScrape  discoveryManager
-		discoveryManagerNotify  discoveryManager
+		discoveryManagerScrape  *discovery.Manager
+		discoveryManagerNotify  *discovery.Manager
 	)
 
 	// Kubernetes client metrics are used by Kubernetes SD.
@@ -759,48 +728,23 @@ func main() {
 	}
 
 	// INFO: 服务发现相关
-	if cfg.enableNewSDManager {
-		{
-			discMgr := discovery.NewManager(ctxScrape, log.With(logger, "component", "discovery manager scrape"), prometheus.DefaultRegisterer, sdMetrics, discovery.Name("scrape"))
-			if discMgr == nil {
-				level.Error(logger).Log("msg", "failed to create a discovery manager scrape")
-				os.Exit(1)
-			}
-			discoveryManagerScrape = discMgr
-		}
+	discoveryManagerScrape = discovery.NewManager(ctxScrape, log.With(logger, "component", "discovery manager scrape"), prometheus.DefaultRegisterer, sdMetrics, discovery.Name("scrape"))
+	if discoveryManagerScrape == nil {
+		level.Error(logger).Log("msg", "failed to create a discovery manager scrape")
+		os.Exit(1)
+	}
 
-		{
-			discMgr := discovery.NewManager(ctxNotify, log.With(logger, "component", "discovery manager notify"), prometheus.DefaultRegisterer, sdMetrics, discovery.Name("notify"))
-			if discMgr == nil {
-				level.Error(logger).Log("msg", "failed to create a discovery manager notify")
-				os.Exit(1)
-			}
-			discoveryManagerNotify = discMgr
-		}
-	} else {
-		{
-			discMgr := legacymanager.NewManager(ctxScrape, log.With(logger, "component", "discovery manager scrape"), prometheus.DefaultRegisterer, sdMetrics, legacymanager.Name("scrape"))
-			if discMgr == nil {
-				level.Error(logger).Log("msg", "failed to create a discovery manager scrape")
-				os.Exit(1)
-			}
-			discoveryManagerScrape = discMgr
-		}
-
-		{
-			discMgr := legacymanager.NewManager(ctxNotify, log.With(logger, "component", "discovery manager notify"), prometheus.DefaultRegisterer, sdMetrics, legacymanager.Name("notify"))
-			if discMgr == nil {
-				level.Error(logger).Log("msg", "failed to create a discovery manager notify")
-				os.Exit(1)
-			}
-			discoveryManagerNotify = discMgr
-		}
+	discoveryManagerNotify = discovery.NewManager(ctxNotify, log.With(logger, "component", "discovery manager notify"), prometheus.DefaultRegisterer, sdMetrics, discovery.Name("notify"))
+	if discoveryManagerNotify == nil {
+		level.Error(logger).Log("msg", "failed to create a discovery manager notify")
+		os.Exit(1)
 	}
 
 	// INFO: 数据抓取相关
 	scrapeManager, err := scrape.NewManager(
 		&cfg.scrape,
 		log.With(logger, "component", "scrape manager"),
+		func(s string) (log.Logger, error) { return logging.NewJSONFileLogger(s) },
 		fanoutStorage,
 		prometheus.DefaultRegisterer,
 	)
@@ -1056,12 +1000,18 @@ func main() {
 	listeners, err := webHandler.Listeners()
 	if err != nil {
 		level.Error(logger).Log("msg", "Unable to start web listeners", "err", err)
+		if err := queryEngine.Close(); err != nil {
+			level.Warn(logger).Log("msg", "Closing query engine failed", "err", err)
+		}
 		os.Exit(1)
 	}
 
 	err = toolkit_web.Validate(*webConfig)
 	if err != nil {
 		level.Error(logger).Log("msg", "Unable to validate web configuration file", "err", err)
+		if err := queryEngine.Close(); err != nil {
+			level.Warn(logger).Log("msg", "Closing query engine failed", "err", err)
+		}
 		os.Exit(1)
 	}
 
@@ -1088,11 +1038,14 @@ func main() {
 				case <-cancel:
 					reloadReady.Close()
 				}
+				if err := queryEngine.Close(); err != nil {
+					level.Warn(logger).Log("msg", "Closing query engine failed", "err", err)
+				}
 				return nil
 			},
 			func(err error) {
 				close(cancel)
-				webHandler.SetReady(false)
+				webHandler.SetReady(web.Stopping)
 			},
 		)
 	}
@@ -1186,6 +1139,15 @@ func main() {
 		hup := make(chan os.Signal, 1)
 		signal.Notify(hup, syscall.SIGHUP)
 		cancel := make(chan struct{})
+
+		var checksum string
+		if cfg.enableAutoReload {
+			checksum, err = config.GenerateChecksum(cfg.configFile)
+			if err != nil {
+				level.Error(logger).Log("msg", "Failed to generate initial checksum for configuration file", "err", err)
+			}
+		}
+
 		g.Add(
 			func() error {
 				<-reloadReady.C
@@ -1195,6 +1157,12 @@ func main() {
 					case <-hup: // INFO: 等待捕获SIGHUP信号,该信号常用于通知进程重新读取配置文件
 						if err := reloadConfig(cfg.configFile, cfg.enableExpandExternalLabels, cfg.tsdb.EnableExemplarStorage, logger, noStepSubqueryInterval, reloaders...); err != nil {
 							level.Error(logger).Log("msg", "Error reloading config", "err", err)
+						} else if cfg.enableAutoReload {
+							if currentChecksum, err := config.GenerateChecksum(cfg.configFile); err == nil {
+								checksum = currentChecksum
+							} else {
+								level.Error(logger).Log("msg", "Failed to generate checksum during configuration reload", "err", err)
+							}
 						}
 					case rc := <-webHandler.Reload(): // INFO: 用于捕获web接口的reload信号
 						if err := reloadConfig(cfg.configFile, cfg.enableExpandExternalLabels, cfg.tsdb.EnableExemplarStorage, logger, noStepSubqueryInterval, reloaders...); err != nil {
@@ -1202,6 +1170,32 @@ func main() {
 							rc <- err
 						} else {
 							rc <- nil
+							if cfg.enableAutoReload {
+								if currentChecksum, err := config.GenerateChecksum(cfg.configFile); err == nil {
+									checksum = currentChecksum
+								} else {
+									level.Error(logger).Log("msg", "Failed to generate checksum during configuration reload", "err", err)
+								}
+							}
+						}
+					case <-time.Tick(time.Duration(cfg.autoReloadInterval)):
+						if !cfg.enableAutoReload {
+							continue
+						}
+						currentChecksum, err := config.GenerateChecksum(cfg.configFile)
+						if err != nil {
+							level.Error(logger).Log("msg", "Failed to generate checksum during configuration reload", "err", err)
+							continue
+						}
+						if currentChecksum == checksum {
+							continue
+						}
+						level.Info(logger).Log("msg", "Configuration file change detected, reloading the configuration.")
+
+						if err := reloadConfig(cfg.configFile, cfg.enableExpandExternalLabels, cfg.tsdb.EnableExemplarStorage, logger, noStepSubqueryInterval, reloaders...); err != nil {
+							level.Error(logger).Log("msg", "Error reloading config", "err", err)
+						} else {
+							checksum = currentChecksum
 						}
 					case <-cancel:
 						return nil
@@ -1236,7 +1230,7 @@ func main() {
 
 				reloadReady.Close()
 
-				webHandler.SetReady(true)
+				webHandler.SetReady(web.Ready)
 				level.Info(logger).Log("msg", "Server is ready to receive web requests.")
 				<-cancel
 				return nil
@@ -1828,6 +1822,7 @@ type tsdbOptions struct {
 	EnableNativeHistograms         bool
 	EnableDelayedCompaction        bool
 	EnableOverlappingCompaction    bool
+	EnableOOONativeHistograms      bool
 }
 
 func (opts tsdbOptions) ToTSDBOptions() tsdb.Options {
@@ -1847,6 +1842,7 @@ func (opts tsdbOptions) ToTSDBOptions() tsdb.Options {
 		MaxExemplars:                   opts.MaxExemplars,
 		EnableMemorySnapshotOnShutdown: opts.EnableMemorySnapshotOnShutdown,
 		EnableNativeHistograms:         opts.EnableNativeHistograms,
+		EnableOOONativeHistograms:      opts.EnableOOONativeHistograms,
 		OutOfOrderTimeWindow:           opts.OutOfOrderTimeWindow,
 		EnableDelayedCompaction:        opts.EnableDelayedCompaction,
 		EnableOverlappingCompaction:    opts.EnableOverlappingCompaction,
@@ -1881,15 +1877,6 @@ func (opts agentOptions) ToAgentOptions(outOfOrderTimeWindow int64) agent.Option
 		NoLockfile:           opts.NoLockfile,
 		OutOfOrderTimeWindow: outOfOrderTimeWindow,
 	}
-}
-
-// discoveryManager interfaces the discovery manager. This is used to keep using
-// the manager that restarts SD's on reload for a few releases until we feel
-// the new manager can be enabled for all users.
-type discoveryManager interface {
-	ApplyConfig(cfg map[string]discovery.Configs) error
-	Run() error
-	SyncCh() <-chan map[string][]*targetgroup.Group
 }
 
 // rwProtoMsgFlagParser is a custom parser for config.RemoteWriteProtoMsg enum.
