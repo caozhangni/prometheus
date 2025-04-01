@@ -4,7 +4,7 @@ import { initializeFromLocalStorage } from "./initializeFromLocalStorage";
 
 interface Settings {
   consolesLink: string | null;
-  lookbackDelta: string,
+  lookbackDelta: string;
   agentMode: boolean;
   ready: boolean;
   pathPrefix: string;
@@ -14,6 +14,8 @@ interface Settings {
   enableSyntaxHighlighting: boolean;
   enableLinter: boolean;
   showAnnotations: boolean;
+  ruleGroupsPerPage: number;
+  alertGroupsPerPage: number;
 }
 
 // Declared/defined in public/index.html, value replaced by Prometheus when serving bundle.
@@ -29,6 +31,34 @@ export const localStorageKeyEnableSyntaxHighlighting =
   "settings.enableSyntaxHighlighting";
 export const localStorageKeyEnableLinter = "settings.enableLinter";
 export const localStorageKeyShowAnnotations = "settings.showAnnotations";
+export const localStorageKeyRuleGroupsPerPage = "settings.ruleGroupsPerPage";
+export const localStorageKeyAlertGroupsPerPage = "settings.alertGroupsPerPage";
+
+// This dynamically/generically determines the pathPrefix by stripping the first known
+// endpoint suffix from the window location path. It works out of the box for both direct
+// hosting and reverse proxy deployments with no additional configurations required.
+const getPathPrefix = (path: string) => {
+  if (path.endsWith("/")) {
+    path = path.slice(0, -1);
+  }
+
+  const pagePaths = [
+    "/query",
+    "/alerts",
+    "/targets",
+    "/rules",
+    "/service-discovery",
+    "/status",
+    "/tsdb-status",
+    "/flags",
+    "/config",
+    "/alertmanager-discovery",
+    "/agent",
+  ];
+
+  const pagePath = pagePaths.find((p) => path.endsWith(p));
+  return path.slice(0, path.length - (pagePath || "").length);
+};
 
 export const initialState: Settings = {
   consolesLink:
@@ -44,7 +74,7 @@ export const initialState: Settings = {
     GLOBAL_LOOKBACKDELTA === null
       ? ""
       : GLOBAL_LOOKBACKDELTA,
-  pathPrefix: "",
+  pathPrefix: getPathPrefix(window.location.pathname),
   useLocalTime: initializeFromLocalStorage<boolean>(
     localStorageKeyUseLocalTime,
     false
@@ -68,6 +98,14 @@ export const initialState: Settings = {
   showAnnotations: initializeFromLocalStorage<boolean>(
     localStorageKeyShowAnnotations,
     true
+  ),
+  ruleGroupsPerPage: initializeFromLocalStorage<number>(
+    localStorageKeyRuleGroupsPerPage,
+    10
+  ),
+  alertGroupsPerPage: initializeFromLocalStorage<number>(
+    localStorageKeyAlertGroupsPerPage,
+    10
   ),
 };
 

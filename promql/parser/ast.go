@@ -19,9 +19,8 @@ import (
 	"time"
 
 	"github.com/prometheus/prometheus/model/labels"
-	"github.com/prometheus/prometheus/storage"
-
 	"github.com/prometheus/prometheus/promql/parser/posrange"
+	"github.com/prometheus/prometheus/storage"
 )
 
 // Node is a generic interface for all nodes in an AST.
@@ -225,6 +224,10 @@ type VectorSelector struct {
 	UnexpandedSeriesSet storage.SeriesSet
 	// INFO: 保存的时序数据
 	Series []storage.Series
+
+	// BypassEmptyMatcherCheck is true when the VectorSelector isn't required to have at least one matcher matching the empty string.
+	// This is the case when VectorSelector is used to represent the info function's second argument.
+	BypassEmptyMatcherCheck bool
 
 	PosRange posrange.PositionRange
 }

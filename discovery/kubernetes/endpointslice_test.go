@@ -114,6 +114,7 @@ func makeEndpointSliceV1() *v1.EndpointSlice {
 }
 
 func TestEndpointSliceDiscoveryBeforeRun(t *testing.T) {
+	t.Parallel()
 	n, c := makeDiscovery(RoleEndpointSlice, NamespaceDiscovery{Names: []string{"default"}})
 
 	k8sDiscoveryTest{
@@ -195,6 +196,7 @@ func TestEndpointSliceDiscoveryBeforeRun(t *testing.T) {
 }
 
 func TestEndpointSliceDiscoveryAdd(t *testing.T) {
+	t.Parallel()
 	obj := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "testpod",
@@ -291,6 +293,7 @@ func TestEndpointSliceDiscoveryAdd(t *testing.T) {
 						"__meta_kubernetes_pod_phase":                               "",
 						"__meta_kubernetes_pod_ready":                               "unknown",
 						"__meta_kubernetes_pod_uid":                                 "deadbeef",
+						"__meta_kubernetes_pod_container_init":                      "false",
 					},
 					{
 						"__address__":                                   "1.2.3.4:9001",
@@ -306,6 +309,7 @@ func TestEndpointSliceDiscoveryAdd(t *testing.T) {
 						"__meta_kubernetes_pod_phase":                   "",
 						"__meta_kubernetes_pod_ready":                   "unknown",
 						"__meta_kubernetes_pod_uid":                     "deadbeef",
+						"__meta_kubernetes_pod_container_init":          "false",
 					},
 				},
 				Labels: model.LabelSet{
@@ -320,6 +324,7 @@ func TestEndpointSliceDiscoveryAdd(t *testing.T) {
 }
 
 func TestEndpointSliceDiscoveryDelete(t *testing.T) {
+	t.Parallel()
 	n, c := makeDiscovery(RoleEndpointSlice, NamespaceDiscovery{Names: []string{"default"}}, makeEndpointSliceV1())
 
 	k8sDiscoveryTest{
@@ -338,6 +343,7 @@ func TestEndpointSliceDiscoveryDelete(t *testing.T) {
 }
 
 func TestEndpointSliceDiscoveryUpdate(t *testing.T) {
+	t.Parallel()
 	n, c := makeDiscovery(RoleEndpointSlice, NamespaceDiscovery{Names: []string{"default"}}, makeEndpointSliceV1())
 
 	k8sDiscoveryTest{
@@ -394,6 +400,7 @@ func TestEndpointSliceDiscoveryUpdate(t *testing.T) {
 }
 
 func TestEndpointSliceDiscoveryEmptyEndpoints(t *testing.T) {
+	t.Parallel()
 	n, c := makeDiscovery(RoleEndpointSlice, NamespaceDiscovery{Names: []string{"default"}}, makeEndpointSliceV1())
 
 	k8sDiscoveryTest{
@@ -422,6 +429,7 @@ func TestEndpointSliceDiscoveryEmptyEndpoints(t *testing.T) {
 }
 
 func TestEndpointSliceDiscoveryWithService(t *testing.T) {
+	t.Parallel()
 	n, c := makeDiscovery(RoleEndpointSlice, NamespaceDiscovery{Names: []string{"default"}}, makeEndpointSliceV1())
 
 	k8sDiscoveryTest{
@@ -514,6 +522,7 @@ func TestEndpointSliceDiscoveryWithService(t *testing.T) {
 }
 
 func TestEndpointSliceDiscoveryWithServiceUpdate(t *testing.T) {
+	t.Parallel()
 	n, c := makeDiscovery(RoleEndpointSlice, NamespaceDiscovery{Names: []string{"default"}}, makeEndpointSliceV1())
 
 	k8sDiscoveryTest{
@@ -621,6 +630,7 @@ func TestEndpointSliceDiscoveryWithServiceUpdate(t *testing.T) {
 }
 
 func TestEndpointsSlicesDiscoveryWithNodeMetadata(t *testing.T) {
+	t.Parallel()
 	metadataConfig := AttachMetadataConfig{Node: true}
 	nodeLabels1 := map[string]string{"az": "us-east1"}
 	nodeLabels2 := map[string]string{"az": "us-west2"}
@@ -720,6 +730,7 @@ func TestEndpointsSlicesDiscoveryWithNodeMetadata(t *testing.T) {
 }
 
 func TestEndpointsSlicesDiscoveryWithUpdatedNodeMetadata(t *testing.T) {
+	t.Parallel()
 	metadataConfig := AttachMetadataConfig{Node: true}
 	nodeLabels1 := map[string]string{"az": "us-east1"}
 	nodeLabels2 := map[string]string{"az": "us-west2"}
@@ -825,6 +836,7 @@ func TestEndpointsSlicesDiscoveryWithUpdatedNodeMetadata(t *testing.T) {
 }
 
 func TestEndpointSliceDiscoveryNamespaces(t *testing.T) {
+	t.Parallel()
 	epOne := makeEndpointSliceV1()
 	epOne.Namespace = "ns1"
 	objs := []runtime.Object{
@@ -986,6 +998,7 @@ func TestEndpointSliceDiscoveryNamespaces(t *testing.T) {
 						"__meta_kubernetes_pod_phase":                         "",
 						"__meta_kubernetes_pod_ready":                         "unknown",
 						"__meta_kubernetes_pod_uid":                           "deadbeef",
+						"__meta_kubernetes_pod_container_init":                "false",
 					},
 				},
 				Labels: model.LabelSet{
@@ -1000,6 +1013,7 @@ func TestEndpointSliceDiscoveryNamespaces(t *testing.T) {
 }
 
 func TestEndpointSliceDiscoveryOwnNamespace(t *testing.T) {
+	t.Parallel()
 	epOne := makeEndpointSliceV1()
 	epOne.Namespace = "own-ns"
 
@@ -1120,6 +1134,7 @@ func TestEndpointSliceDiscoveryOwnNamespace(t *testing.T) {
 }
 
 func TestEndpointSliceDiscoveryEmptyPodStatus(t *testing.T) {
+	t.Parallel()
 	ep := makeEndpointSliceV1()
 	ep.Namespace = "ns"
 
@@ -1166,6 +1181,7 @@ func TestEndpointSliceDiscoveryEmptyPodStatus(t *testing.T) {
 // sets up indexing for the main Kube informer only when needed.
 // See: https://github.com/prometheus/prometheus/pull/13554#discussion_r1490965817
 func TestEndpointSliceInfIndexersCount(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name             string
 		withNodeMetadata bool
@@ -1176,6 +1192,7 @@ func TestEndpointSliceInfIndexersCount(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			var (
 				n                    *Discovery
 				mainInfIndexersCount int
@@ -1198,4 +1215,167 @@ func TestEndpointSliceInfIndexersCount(t *testing.T) {
 			}.Run(t)
 		})
 	}
+}
+
+func TestEndpointSliceDiscoverySidecarContainer(t *testing.T) {
+	t.Parallel()
+	objs := []runtime.Object{
+		&v1.EndpointSlice{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "testsidecar",
+				Namespace: "default",
+			},
+			AddressType: v1.AddressTypeIPv4,
+			Ports: []v1.EndpointPort{
+				{
+					Name:     strptr("testport"),
+					Port:     int32ptr(9000),
+					Protocol: protocolptr(corev1.ProtocolTCP),
+				},
+				{
+					Name:     strptr("initport"),
+					Port:     int32ptr(9111),
+					Protocol: protocolptr(corev1.ProtocolTCP),
+				},
+			},
+			Endpoints: []v1.Endpoint{
+				{
+					Addresses: []string{"4.3.2.1"},
+					TargetRef: &corev1.ObjectReference{
+						Kind:      "Pod",
+						Name:      "testpod",
+						Namespace: "default",
+					},
+				},
+			},
+		},
+		&corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "testpod",
+				Namespace: "default",
+				UID:       types.UID("deadbeef"),
+			},
+			Spec: corev1.PodSpec{
+				NodeName: "testnode",
+				InitContainers: []corev1.Container{
+					{
+						Name:  "ic1",
+						Image: "ic1:latest",
+						Ports: []corev1.ContainerPort{
+							{
+								Name:          "initport",
+								ContainerPort: 1111,
+								Protocol:      corev1.ProtocolTCP,
+							},
+						},
+					},
+					{
+						Name:  "ic2",
+						Image: "ic2:latest",
+						Ports: []corev1.ContainerPort{
+							{
+								Name:          "initport",
+								ContainerPort: 9111,
+								Protocol:      corev1.ProtocolTCP,
+							},
+						},
+					},
+				},
+				Containers: []corev1.Container{
+					{
+						Name:  "c1",
+						Image: "c1:latest",
+						Ports: []corev1.ContainerPort{
+							{
+								Name:          "mainport",
+								ContainerPort: 9000,
+								Protocol:      corev1.ProtocolTCP,
+							},
+						},
+					},
+				},
+			},
+			Status: corev1.PodStatus{
+				HostIP: "2.3.4.5",
+				PodIP:  "4.3.2.1",
+			},
+		},
+	}
+
+	n, _ := makeDiscovery(RoleEndpointSlice, NamespaceDiscovery{}, objs...)
+
+	k8sDiscoveryTest{
+		discovery:        n,
+		expectedMaxItems: 1,
+		expectedRes: map[string]*targetgroup.Group{
+			"endpointslice/default/testsidecar": {
+				Targets: []model.LabelSet{
+					{
+						"__address__": "4.3.2.1:9000",
+						"__meta_kubernetes_endpointslice_address_target_kind": "Pod",
+						"__meta_kubernetes_endpointslice_address_target_name": "testpod",
+						"__meta_kubernetes_endpointslice_port":                "9000",
+						"__meta_kubernetes_endpointslice_port_name":           "testport",
+						"__meta_kubernetes_endpointslice_port_protocol":       "TCP",
+						"__meta_kubernetes_pod_container_image":               "c1:latest",
+						"__meta_kubernetes_pod_container_name":                "c1",
+						"__meta_kubernetes_pod_container_port_name":           "mainport",
+						"__meta_kubernetes_pod_container_port_number":         "9000",
+						"__meta_kubernetes_pod_container_port_protocol":       "TCP",
+						"__meta_kubernetes_pod_host_ip":                       "2.3.4.5",
+						"__meta_kubernetes_pod_ip":                            "4.3.2.1",
+						"__meta_kubernetes_pod_name":                          "testpod",
+						"__meta_kubernetes_pod_node_name":                     "testnode",
+						"__meta_kubernetes_pod_phase":                         "",
+						"__meta_kubernetes_pod_ready":                         "unknown",
+						"__meta_kubernetes_pod_uid":                           "deadbeef",
+						"__meta_kubernetes_pod_container_init":                "false",
+					},
+					{
+						"__address__": "4.3.2.1:9111",
+						"__meta_kubernetes_endpointslice_address_target_kind": "Pod",
+						"__meta_kubernetes_endpointslice_address_target_name": "testpod",
+						"__meta_kubernetes_endpointslice_port":                "9111",
+						"__meta_kubernetes_endpointslice_port_name":           "initport",
+						"__meta_kubernetes_endpointslice_port_protocol":       "TCP",
+						"__meta_kubernetes_pod_container_image":               "ic2:latest",
+						"__meta_kubernetes_pod_container_name":                "ic2",
+						"__meta_kubernetes_pod_container_port_name":           "initport",
+						"__meta_kubernetes_pod_container_port_number":         "9111",
+						"__meta_kubernetes_pod_container_port_protocol":       "TCP",
+						"__meta_kubernetes_pod_host_ip":                       "2.3.4.5",
+						"__meta_kubernetes_pod_ip":                            "4.3.2.1",
+						"__meta_kubernetes_pod_name":                          "testpod",
+						"__meta_kubernetes_pod_node_name":                     "testnode",
+						"__meta_kubernetes_pod_phase":                         "",
+						"__meta_kubernetes_pod_ready":                         "unknown",
+						"__meta_kubernetes_pod_uid":                           "deadbeef",
+						"__meta_kubernetes_pod_container_init":                "true",
+					},
+					{
+						"__address__":                                   "4.3.2.1:1111",
+						"__meta_kubernetes_pod_container_image":         "ic1:latest",
+						"__meta_kubernetes_pod_container_name":          "ic1",
+						"__meta_kubernetes_pod_container_port_name":     "initport",
+						"__meta_kubernetes_pod_container_port_number":   "1111",
+						"__meta_kubernetes_pod_container_port_protocol": "TCP",
+						"__meta_kubernetes_pod_host_ip":                 "2.3.4.5",
+						"__meta_kubernetes_pod_ip":                      "4.3.2.1",
+						"__meta_kubernetes_pod_name":                    "testpod",
+						"__meta_kubernetes_pod_node_name":               "testnode",
+						"__meta_kubernetes_pod_phase":                   "",
+						"__meta_kubernetes_pod_ready":                   "unknown",
+						"__meta_kubernetes_pod_uid":                     "deadbeef",
+						"__meta_kubernetes_pod_container_init":          "true",
+					},
+				},
+				Labels: model.LabelSet{
+					"__meta_kubernetes_endpointslice_address_type": "IPv4",
+					"__meta_kubernetes_endpointslice_name":         "testsidecar",
+					"__meta_kubernetes_namespace":                  "default",
+				},
+				Source: "endpointslice/default/testsidecar",
+			},
+		},
+	}.Run(t)
 }

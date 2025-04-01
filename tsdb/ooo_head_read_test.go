@@ -28,7 +28,7 @@ import (
 	"github.com/prometheus/prometheus/storage"
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/prometheus/prometheus/tsdb/chunks"
-	"github.com/prometheus/prometheus/tsdb/wlog"
+	"github.com/prometheus/prometheus/util/compression"
 )
 
 type chunkInterval struct {
@@ -300,7 +300,7 @@ func TestOOOHeadIndexReader_Series(t *testing.T) {
 		for perm, intervals := range permutations {
 			for _, headChunk := range []bool{false, true} {
 				t.Run(fmt.Sprintf("name=%s, permutation=%d, headChunk=%t", tc.name, perm, headChunk), func(t *testing.T) {
-					h, _ := newTestHead(t, 1000, wlog.CompressionNone, true)
+					h, _ := newTestHead(t, 1000, compression.None, true)
 					defer func() {
 						require.NoError(t, h.Close())
 					}()
@@ -385,11 +385,10 @@ func TestOOOHeadChunkReader_LabelValues(t *testing.T) {
 	}
 }
 
-//nolint:revive // unexported-return.
+//nolint:revive // unexported-return
 func testOOOHeadChunkReader_LabelValues(t *testing.T, scenario sampleTypeScenario) {
 	chunkRange := int64(2000)
-	head, _ := newTestHead(t, chunkRange, wlog.CompressionNone, true)
-	head.opts.EnableOOONativeHistograms.Store(true)
+	head, _ := newTestHead(t, chunkRange, compression.None, true)
 	t.Cleanup(func() { require.NoError(t, head.Close()) })
 
 	ctx := context.Background()
@@ -489,13 +488,12 @@ func TestOOOHeadChunkReader_Chunk(t *testing.T) {
 	}
 }
 
-//nolint:revive // unexported-return.
+//nolint:revive // unexported-return
 func testOOOHeadChunkReader_Chunk(t *testing.T, scenario sampleTypeScenario) {
 	opts := DefaultOptions()
 	opts.OutOfOrderCapMax = 5
 	opts.OutOfOrderTimeWindow = 120 * time.Minute.Milliseconds()
 	opts.EnableNativeHistograms = true
-	opts.EnableOOONativeHistograms = true
 
 	s1 := labels.FromStrings("l", "v1")
 	minutes := func(m int64) int64 { return m * time.Minute.Milliseconds() }
@@ -509,7 +507,7 @@ func testOOOHeadChunkReader_Chunk(t *testing.T, scenario sampleTypeScenario) {
 			Ref: 0x1800000, Chunk: chunkenc.Chunk(nil), MinTime: 100, MaxTime: 300,
 		})
 		require.Nil(t, iterable)
-		require.Equal(t, err, fmt.Errorf("not found"))
+		require.EqualError(t, err, "not found")
 		require.Nil(t, c)
 	})
 
@@ -878,7 +876,7 @@ func testOOOHeadChunkReader_Chunk(t *testing.T, scenario sampleTypeScenario) {
 				}
 				resultSamples, err := storage.ExpandSamples(it, nil)
 				require.NoError(t, err)
-				requireEqualSamples(t, s1.String(), tc.expChunksSamples[i], resultSamples, true)
+				requireEqualSamples(t, s1.String(), tc.expChunksSamples[i], resultSamples, requireEqualSamplesIgnoreCounterResets)
 			}
 		})
 	}
@@ -900,13 +898,12 @@ func TestOOOHeadChunkReader_Chunk_ConsistentQueryResponseDespiteOfHeadExpanding(
 	}
 }
 
-//nolint:revive // unexported-return.
+//nolint:revive // unexported-return
 func testOOOHeadChunkReader_Chunk_ConsistentQueryResponseDespiteOfHeadExpanding(t *testing.T, scenario sampleTypeScenario) {
 	opts := DefaultOptions()
 	opts.OutOfOrderCapMax = 5
 	opts.OutOfOrderTimeWindow = 120 * time.Minute.Milliseconds()
 	opts.EnableNativeHistograms = true
-	opts.EnableOOONativeHistograms = true
 
 	s1 := labels.FromStrings("l", "v1")
 	minutes := func(m int64) int64 { return m * time.Minute.Milliseconds() }
@@ -963,7 +960,7 @@ func testOOOHeadChunkReader_Chunk_ConsistentQueryResponseDespiteOfHeadExpanding(
 			},
 		},
 		{
-			name:                 "After Series() prev head gets mmapped after getting samples, new head gets new samples also overlapping, none of these should appear in response.",
+			name:                 "After Series() prev head mmapped after getting samples, new head gets new samples also overlapping, none should appear in response.",
 			queryMinT:            minutes(0),
 			queryMaxT:            minutes(100),
 			firstInOrderSampleAt: minutes(120),
@@ -1054,7 +1051,7 @@ func testOOOHeadChunkReader_Chunk_ConsistentQueryResponseDespiteOfHeadExpanding(
 				it := iterable.Iterator(nil)
 				resultSamples, err := storage.ExpandSamples(it, nil)
 				require.NoError(t, err)
-				requireEqualSamples(t, s1.String(), tc.expChunksSamples[i], resultSamples, true)
+				requireEqualSamples(t, s1.String(), tc.expChunksSamples[i], resultSamples, requireEqualSamplesIgnoreCounterResets)
 			}
 		})
 	}

@@ -26,7 +26,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/oklog/ulid"
+	"github.com/oklog/ulid/v2"
 	"github.com/stretchr/testify/require"
 
 	"github.com/prometheus/prometheus/model/histogram"
@@ -104,7 +104,7 @@ type seriesSamples struct {
 // Index: labels -> postings -> chunkMetas -> chunkRef.
 // ChunkReader: ref -> vals.
 func createIdxChkReaders(t *testing.T, tc []seriesSamples) (IndexReader, ChunkReader, int64, int64) {
-	sort.Slice(tc, func(i, j int) bool {
+	sort.Slice(tc, func(i, _ int) bool {
 		return labels.Compare(labels.FromMap(tc[i].lset), labels.FromMap(tc[i].lset)) < 0
 	})
 
@@ -1507,8 +1507,6 @@ func TestPopulateWithTombSeriesIterators(t *testing.T) {
 			expectedMinMaxTimes: []minMaxTimes{{7, 12}, {11, 16}, {10, 203}},
 		},
 		{
-			// This case won't actually happen until OOO native histograms is implemented.
-			// Issue: https://github.com/prometheus/prometheus/issues/11220.
 			name: "int histogram iterables with counter resets",
 			samples: [][]chunks.Sample{
 				{
@@ -1578,8 +1576,6 @@ func TestPopulateWithTombSeriesIterators(t *testing.T) {
 			skipChunkTest: true,
 		},
 		{
-			// This case won't actually happen until OOO native histograms is implemented.
-			// Issue: https://github.com/prometheus/prometheus/issues/11220.
 			name: "float histogram iterables with counter resets",
 			samples: [][]chunks.Sample{
 				{
@@ -1649,8 +1645,6 @@ func TestPopulateWithTombSeriesIterators(t *testing.T) {
 			skipChunkTest: true,
 		},
 		{
-			// This case won't actually happen until OOO native histograms is implemented.
-			// Issue: https://github.com/prometheus/prometheus/issues/11220.
 			name: "iterables with mixed encodings and counter resets",
 			samples: [][]chunks.Sample{
 				{
@@ -1826,12 +1820,12 @@ func checkCurrVal(t *testing.T, valType chunkenc.ValueType, it *populateWithDelS
 		ts, h := it.AtHistogram(nil)
 		require.Equal(t, int64(expectedTs), ts)
 		h.CounterResetHint = histogram.UnknownCounterReset
-		require.Equal(t, tsdbutil.GenerateTestHistogram(expectedValue), h)
+		require.Equal(t, tsdbutil.GenerateTestHistogram(int64(expectedValue)), h)
 	case chunkenc.ValFloatHistogram:
 		ts, h := it.AtFloatHistogram(nil)
 		require.Equal(t, int64(expectedTs), ts)
 		h.CounterResetHint = histogram.UnknownCounterReset
-		require.Equal(t, tsdbutil.GenerateTestFloatHistogram(expectedValue), h)
+		require.Equal(t, tsdbutil.GenerateTestFloatHistogram(int64(expectedValue)), h)
 	default:
 		panic("unexpected value type")
 	}
@@ -2030,7 +2024,7 @@ func TestPopulateWithDelSeriesIterator_NextWithMinTime(t *testing.T) {
 // TODO(bwplotka): Merge with storage merged series set benchmark.
 func BenchmarkMergedSeriesSet(b *testing.B) {
 	sel := func(sets []storage.SeriesSet) storage.SeriesSet {
-		return storage.NewMergeSeriesSet(sets, storage.ChainedSeriesMerge)
+		return storage.NewMergeSeriesSet(sets, 0, storage.ChainedSeriesMerge)
 	}
 
 	for _, k := range []int{
@@ -2340,6 +2334,16 @@ func (m mockIndex) PostingsForLabelMatching(ctx context.Context, name string, ma
 	return index.Merge(ctx, res...)
 }
 
+func (m mockIndex) PostingsForAllLabelValues(ctx context.Context, name string) index.Postings {
+	var res []index.Postings
+	for l, srs := range m.postings {
+		if l.Name == name {
+			res = append(res, index.NewListPostings(srs))
+		}
+	}
+	return index.Merge(ctx, res...)
+}
+
 func (m mockIndex) ShardedPostings(p index.Postings, shardIndex, shardCount uint64) index.Postings {
 	out := make([]storage.SeriesRef, 0, 128)
 
@@ -2443,7 +2447,7 @@ func BenchmarkQueryIterator(b *testing.B) {
 					} else {
 						generatedSeries = populateSeries(prefilledLabels, mint, maxt)
 					}
-					block, err := OpenBlock(nil, createBlock(b, dir, generatedSeries), nil)
+					block, err := OpenBlock(nil, createBlock(b, dir, generatedSeries), nil, nil)
 					require.NoError(b, err)
 					blocks = append(blocks, block)
 					defer block.Close()
@@ -2506,7 +2510,7 @@ func BenchmarkQuerySeek(b *testing.B) {
 					} else {
 						generatedSeries = populateSeries(prefilledLabels, mint, maxt)
 					}
-					block, err := OpenBlock(nil, createBlock(b, dir, generatedSeries), nil)
+					block, err := OpenBlock(nil, createBlock(b, dir, generatedSeries), nil, nil)
 					require.NoError(b, err)
 					blocks = append(blocks, block)
 					defer block.Close()
@@ -2623,42 +2627,42 @@ func BenchmarkSetMatcher(b *testing.B) {
 	}
 
 	for _, c := range cases {
-		dir := b.TempDir()
-
-		var (
-			blocks          []*Block
-			prefilledLabels []map[string]string
-			generatedSeries []storage.Series
-		)
-		for i := int64(0); i < int64(c.numBlocks); i++ {
-			mint := i * int64(c.numSamplesPerSeriesPerBlock)
-			maxt := mint + int64(c.numSamplesPerSeriesPerBlock) - 1
-			if len(prefilledLabels) == 0 {
-				generatedSeries = genSeries(c.numSeries, 10, mint, maxt)
-				for _, s := range generatedSeries {
-					prefilledLabels = append(prefilledLabels, s.Labels().Map())
-				}
-			} else {
-				generatedSeries = populateSeries(prefilledLabels, mint, maxt)
-			}
-			block, err := OpenBlock(nil, createBlock(b, dir, generatedSeries), nil)
-			require.NoError(b, err)
-			blocks = append(blocks, block)
-			defer block.Close()
-		}
-
-		qblocks := make([]storage.Querier, 0, len(blocks))
-		for _, blk := range blocks {
-			q, err := NewBlockQuerier(blk, math.MinInt64, math.MaxInt64)
-			require.NoError(b, err)
-			qblocks = append(qblocks, q)
-		}
-
-		sq := storage.NewMergeQuerier(qblocks, nil, storage.ChainedSeriesMerge)
-		defer sq.Close()
-
 		benchMsg := fmt.Sprintf("nSeries=%d,nBlocks=%d,cardinality=%d,pattern=\"%s\"", c.numSeries, c.numBlocks, c.cardinality, c.pattern)
 		b.Run(benchMsg, func(b *testing.B) {
+			dir := b.TempDir()
+
+			var (
+				blocks          []*Block
+				prefilledLabels []map[string]string
+				generatedSeries []storage.Series
+			)
+			for i := int64(0); i < int64(c.numBlocks); i++ {
+				mint := i * int64(c.numSamplesPerSeriesPerBlock)
+				maxt := mint + int64(c.numSamplesPerSeriesPerBlock) - 1
+				if len(prefilledLabels) == 0 {
+					generatedSeries = genSeries(c.numSeries, 10, mint, maxt)
+					for _, s := range generatedSeries {
+						prefilledLabels = append(prefilledLabels, s.Labels().Map())
+					}
+				} else {
+					generatedSeries = populateSeries(prefilledLabels, mint, maxt)
+				}
+				block, err := OpenBlock(nil, createBlock(b, dir, generatedSeries), nil, nil)
+				require.NoError(b, err)
+				blocks = append(blocks, block)
+				defer block.Close()
+			}
+
+			qblocks := make([]storage.Querier, 0, len(blocks))
+			for _, blk := range blocks {
+				q, err := NewBlockQuerier(blk, math.MinInt64, math.MaxInt64)
+				require.NoError(b, err)
+				qblocks = append(qblocks, q)
+			}
+
+			sq := storage.NewMergeQuerier(qblocks, nil, storage.ChainedSeriesMerge)
+			defer sq.Close()
+
 			b.ResetTimer()
 			b.ReportAllocs()
 			for n := 0; n < b.N; n++ {
@@ -3007,6 +3011,15 @@ func TestPostingsForMatchers(t *testing.T) {
 			matchers: []*labels.Matcher{labels.MustNewMatcher(labels.MatchEqual, "n", "1"), labels.MustNewMatcher(labels.MatchNotRegexp, "i", "^.*$")},
 			exp:      []labels.Labels{},
 		},
+		// Test shortcut i!~".+"
+		{
+			matchers: []*labels.Matcher{labels.MustNewMatcher(labels.MatchRegexp, "n", ".*"), labels.MustNewMatcher(labels.MatchNotRegexp, "i", ".+")},
+			exp: []labels.Labels{
+				labels.FromStrings("n", "1"),
+				labels.FromStrings("n", "2"),
+				labels.FromStrings("n", "2.5"),
+			},
+		},
 	}
 
 	ir, err := h.Index()
@@ -3209,7 +3222,7 @@ func BenchmarkQueries(b *testing.B) {
 
 				qs := make([]storage.Querier, 0, 10)
 				for x := 0; x <= 10; x++ {
-					block, err := OpenBlock(nil, createBlock(b, dir, series), nil)
+					block, err := OpenBlock(nil, createBlock(b, dir, series), nil, nil)
 					require.NoError(b, err)
 					q, err := NewBlockQuerier(block, 1, nSamples)
 					require.NoError(b, err)
@@ -3299,7 +3312,7 @@ func (m mockMatcherIndex) LabelValueFor(context.Context, storage.SeriesRef, stri
 	return "", errors.New("label value for called")
 }
 
-func (m mockMatcherIndex) LabelNamesFor(ctx context.Context, postings index.Postings) ([]string, error) {
+func (m mockMatcherIndex) LabelNamesFor(_ context.Context, _ index.Postings) ([]string, error) {
 	return nil, errors.New("label names for called")
 }
 
@@ -3307,15 +3320,15 @@ func (m mockMatcherIndex) Postings(context.Context, string, ...string) (index.Po
 	return index.EmptyPostings(), nil
 }
 
-func (m mockMatcherIndex) SortedPostings(p index.Postings) index.Postings {
+func (m mockMatcherIndex) SortedPostings(_ index.Postings) index.Postings {
 	return index.EmptyPostings()
 }
 
-func (m mockMatcherIndex) ShardedPostings(ps index.Postings, shardIndex, shardCount uint64) index.Postings {
+func (m mockMatcherIndex) ShardedPostings(ps index.Postings, _, _ uint64) index.Postings {
 	return ps
 }
 
-func (m mockMatcherIndex) Series(ref storage.SeriesRef, builder *labels.ScratchBuilder, chks *[]chunks.Meta) error {
+func (m mockMatcherIndex) Series(_ storage.SeriesRef, _ *labels.ScratchBuilder, _ *[]chunks.Meta) error {
 	return nil
 }
 
@@ -3324,7 +3337,11 @@ func (m mockMatcherIndex) LabelNames(context.Context, ...*labels.Matcher) ([]str
 }
 
 func (m mockMatcherIndex) PostingsForLabelMatching(context.Context, string, func(string) bool) index.Postings {
-	return index.ErrPostings(fmt.Errorf("PostingsForLabelMatching called"))
+	return index.ErrPostings(errors.New("PostingsForLabelMatching called"))
+}
+
+func (m mockMatcherIndex) PostingsForAllLabelValues(context.Context, string) index.Postings {
+	return index.ErrPostings(errors.New("PostingsForAllLabelValues called"))
 }
 
 func TestPostingsForMatcher(t *testing.T) {
@@ -3565,16 +3582,16 @@ func TestQueryWithDeletedHistograms(t *testing.T) {
 	ctx := context.Background()
 	testcases := map[string]func(int) (*histogram.Histogram, *histogram.FloatHistogram){
 		"intCounter": func(i int) (*histogram.Histogram, *histogram.FloatHistogram) {
-			return tsdbutil.GenerateTestHistogram(i), nil
+			return tsdbutil.GenerateTestHistogram(int64(i)), nil
 		},
-		"intgauge": func(i int) (*histogram.Histogram, *histogram.FloatHistogram) {
-			return tsdbutil.GenerateTestGaugeHistogram(rand.Int() % 1000), nil
+		"intgauge": func(_ int) (*histogram.Histogram, *histogram.FloatHistogram) {
+			return tsdbutil.GenerateTestGaugeHistogram(rand.Int63() % 1000), nil
 		},
 		"floatCounter": func(i int) (*histogram.Histogram, *histogram.FloatHistogram) {
-			return nil, tsdbutil.GenerateTestFloatHistogram(i)
+			return nil, tsdbutil.GenerateTestFloatHistogram(int64(i))
 		},
-		"floatGauge": func(i int) (*histogram.Histogram, *histogram.FloatHistogram) {
-			return nil, tsdbutil.GenerateTestGaugeFloatHistogram(rand.Int() % 1000)
+		"floatGauge": func(_ int) (*histogram.Histogram, *histogram.FloatHistogram) {
+			return nil, tsdbutil.GenerateTestGaugeFloatHistogram(rand.Int63() % 1000)
 		},
 	}
 
@@ -3725,17 +3742,6 @@ func TestReader_PostingsForLabelMatchingHonorsContextCancel(t *testing.T) {
 	require.Equal(t, failAfter+1, ctx.Count()) // Plus one for the Err() call that puts the error in the result.
 }
 
-func TestReader_InversePostingsForMatcherHonorsContextCancel(t *testing.T) {
-	ir := mockReaderOfLabels{}
-
-	failAfter := uint64(mockReaderOfLabelsSeriesCount / 2 / checkContextEveryNIterations)
-	ctx := &testutil.MockContextErrAfter{FailAfter: failAfter}
-	_, err := inversePostingsForMatcher(ctx, ir, labels.MustNewMatcher(labels.MatchRegexp, "__name__", ".*"))
-
-	require.Error(t, err)
-	require.Equal(t, failAfter+1, ctx.Count()) // Plus one for the Err() call that puts the error in the result.
-}
-
 type mockReaderOfLabels struct{}
 
 const mockReaderOfLabelsSeriesCount = checkContextEveryNIterations * 10
@@ -3768,6 +3774,10 @@ func (m mockReaderOfLabels) PostingsForLabelMatching(context.Context, string, fu
 	panic("PostingsForLabelMatching called")
 }
 
+func (m mockReaderOfLabels) PostingsForAllLabelValues(context.Context, string) index.Postings {
+	panic("PostingsForAllLabelValues called")
+}
+
 func (m mockReaderOfLabels) Postings(context.Context, string, ...string) (index.Postings, error) {
 	panic("Postings called")
 }
@@ -3786,4 +3796,36 @@ func (m mockReaderOfLabels) Series(storage.SeriesRef, *labels.ScratchBuilder, *[
 
 func (m mockReaderOfLabels) Symbols() index.StringIter {
 	panic("Series called")
+}
+
+// TestMergeQuerierConcurrentSelectMatchers reproduces the data race bug from
+// https://github.com/prometheus/prometheus/issues/14723, when one of the queriers (blockQuerier in this case)
+// alters the passed matchers.
+func TestMergeQuerierConcurrentSelectMatchers(t *testing.T) {
+	block, err := OpenBlock(nil, createBlock(t, t.TempDir(), genSeries(1, 1, 0, 1)), nil, nil)
+	require.NoError(t, err)
+	defer func() {
+		require.NoError(t, block.Close())
+	}()
+	p, err := NewBlockQuerier(block, 0, 1)
+	require.NoError(t, err)
+
+	// A secondary querier is required to enable concurrent select; a blockQuerier is used for simplicity.
+	s, err := NewBlockQuerier(block, 0, 1)
+	require.NoError(t, err)
+
+	originalMatchers := []*labels.Matcher{
+		labels.MustNewMatcher(labels.MatchRegexp, "baz", ".*"),
+		labels.MustNewMatcher(labels.MatchEqual, "foo", "bar"),
+	}
+	matchers := append([]*labels.Matcher{}, originalMatchers...)
+
+	mergedQuerier := storage.NewMergeQuerier([]storage.Querier{p}, []storage.Querier{s}, storage.ChainedSeriesMerge)
+	defer func() {
+		require.NoError(t, mergedQuerier.Close())
+	}()
+
+	mergedQuerier.Select(context.Background(), false, nil, matchers...)
+
+	require.Equal(t, originalMatchers, matchers)
 }

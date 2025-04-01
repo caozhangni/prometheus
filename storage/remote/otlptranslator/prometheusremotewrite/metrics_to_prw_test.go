@@ -22,21 +22,123 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/go-cmp/cmp"
+	"github.com/prometheus/otlptranslator"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/pdata/pcommon"
 	"go.opentelemetry.io/collector/pdata/pmetric"
 	"go.opentelemetry.io/collector/pdata/pmetric/pmetricotlp"
+
+	"github.com/prometheus/prometheus/model/labels"
+	"github.com/prometheus/prometheus/prompb"
 )
 
 func TestFromMetrics(t *testing.T) {
-	t.Run("successful", func(t *testing.T) {
-		converter := NewPrometheusConverter()
-		payload := createExportRequest(5, 128, 128, 2, 0)
+	for _, keepIdentifyingResourceAttributes := range []bool{false, true} {
+		t.Run(fmt.Sprintf("successful/keepIdentifyingAttributes=%v", keepIdentifyingResourceAttributes), func(t *testing.T) {
+			converter := NewPrometheusConverter()
+			payload := createExportRequest(5, 128, 128, 2, 0)
+			var expMetadata []prompb.MetricMetadata
+			resourceMetricsSlice := payload.Metrics().ResourceMetrics()
+			for i := 0; i < resourceMetricsSlice.Len(); i++ {
+				scopeMetricsSlice := resourceMetricsSlice.At(i).ScopeMetrics()
+				for j := 0; j < scopeMetricsSlice.Len(); j++ {
+					metricSlice := scopeMetricsSlice.At(j).Metrics()
+					for k := 0; k < metricSlice.Len(); k++ {
+						metric := metricSlice.At(k)
+						promName := otlptranslator.BuildCompliantMetricName(metric, "", false)
+						expMetadata = append(expMetadata, prompb.MetricMetadata{
+							Type:             otelMetricTypeToPromMetricType(metric),
+							MetricFamilyName: promName,
+							Help:             metric.Description(),
+							Unit:             metric.Unit(),
+						})
+					}
+				}
+			}
 
-		annots, err := converter.FromMetrics(context.Background(), payload.Metrics(), Settings{})
-		require.NoError(t, err)
-		require.Empty(t, annots)
-	})
+			annots, err := converter.FromMetrics(
+				context.Background(),
+				payload.Metrics(),
+				Settings{KeepIdentifyingResourceAttributes: keepIdentifyingResourceAttributes},
+			)
+			require.NoError(t, err)
+			require.Empty(t, annots)
+
+			if diff := cmp.Diff(expMetadata, converter.Metadata()); diff != "" {
+				t.Errorf("mismatch (-want +got):\n%s", diff)
+			}
+
+			ts := converter.TimeSeries()
+			require.Len(t, ts, 1408+1) // +1 for the target_info.
+
+			tgtInfoCount := 0
+			for _, s := range ts {
+				b := labels.NewScratchBuilder(2)
+				lbls := s.ToLabels(&b, nil)
+				if lbls.Get(labels.MetricName) == "target_info" {
+					tgtInfoCount++
+					require.Equal(t, "test-namespace/test-service", lbls.Get("job"))
+					require.Equal(t, "id1234", lbls.Get("instance"))
+					if keepIdentifyingResourceAttributes {
+						require.Equal(t, "test-service", lbls.Get("service_name"))
+						require.Equal(t, "test-namespace", lbls.Get("service_namespace"))
+						require.Equal(t, "id1234", lbls.Get("service_instance_id"))
+					} else {
+						require.False(t, lbls.Has("service_name"))
+						require.False(t, lbls.Has("service_namespace"))
+						require.False(t, lbls.Has("service_instance_id"))
+					}
+				}
+			}
+			require.Equal(t, 1, tgtInfoCount)
+		})
+	}
+
+	for _, convertHistogramsToNHCB := range []bool{false, true} {
+		t.Run(fmt.Sprintf("successful/convertHistogramsToNHCB=%v", convertHistogramsToNHCB), func(t *testing.T) {
+			request := pmetricotlp.NewExportRequest()
+			rm := request.Metrics().ResourceMetrics().AppendEmpty()
+			generateAttributes(rm.Resource().Attributes(), "resource", 10)
+
+			metrics := rm.ScopeMetrics().AppendEmpty().Metrics()
+			ts := pcommon.NewTimestampFromTime(time.Now())
+
+			m := metrics.AppendEmpty()
+			m.SetEmptyHistogram()
+			m.SetName("histogram-1")
+			m.Histogram().SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+			h := m.Histogram().DataPoints().AppendEmpty()
+			h.SetTimestamp(ts)
+
+			h.SetCount(15)
+			h.SetSum(155)
+
+			generateAttributes(h.Attributes(), "series", 1)
+
+			converter := NewPrometheusConverter()
+			annots, err := converter.FromMetrics(
+				context.Background(),
+				request.Metrics(),
+				Settings{ConvertHistogramsToNHCB: convertHistogramsToNHCB},
+			)
+			require.NoError(t, err)
+			require.Empty(t, annots)
+
+			series := converter.TimeSeries()
+
+			if convertHistogramsToNHCB {
+				require.Len(t, series[0].Histograms, 1)
+				require.Empty(t, series[0].Samples)
+			} else {
+				require.Len(t, series, 3)
+				for i := range series {
+					require.Len(t, series[i].Samples, 1)
+					require.Nil(t, series[i].Histograms)
+				}
+			}
+		})
+	}
 
 	t.Run("context cancellation", func(t *testing.T) {
 		converter := NewPrometheusConverter()
@@ -94,6 +196,43 @@ func TestFromMetrics(t *testing.T) {
 			"exponential histogram data point has zero count, but non-zero sum: 155.000000",
 		}, ws)
 	})
+
+	t.Run("explicit histogram to NHCB warnings for zero count and non-zero sum", func(t *testing.T) {
+		request := pmetricotlp.NewExportRequest()
+		rm := request.Metrics().ResourceMetrics().AppendEmpty()
+		generateAttributes(rm.Resource().Attributes(), "resource", 10)
+
+		metrics := rm.ScopeMetrics().AppendEmpty().Metrics()
+		ts := pcommon.NewTimestampFromTime(time.Now())
+
+		for i := 1; i <= 10; i++ {
+			m := metrics.AppendEmpty()
+			m.SetEmptyHistogram()
+			m.SetName(fmt.Sprintf("histogram-%d", i))
+			m.Histogram().SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+			h := m.Histogram().DataPoints().AppendEmpty()
+			h.SetTimestamp(ts)
+
+			h.SetCount(0)
+			h.SetSum(155)
+
+			generateAttributes(h.Attributes(), "series", 10)
+		}
+
+		converter := NewPrometheusConverter()
+		annots, err := converter.FromMetrics(
+			context.Background(),
+			request.Metrics(),
+			Settings{ConvertHistogramsToNHCB: true},
+		)
+		require.NoError(t, err)
+		require.NotEmpty(t, annots)
+		ws, infos := annots.AsStrings("", 0, 0)
+		require.Empty(t, infos)
+		require.Equal(t, []string{
+			"histogram data point has zero count, but non-zero sum: 155.000000",
+		}, ws)
+	})
 }
 
 func BenchmarkPrometheusConverter_FromMetrics(b *testing.B) {
@@ -115,13 +254,15 @@ func BenchmarkPrometheusConverter_FromMetrics(b *testing.B) {
 									for _, exemplarsPerSeries := range []int{0, 5, 10} {
 										b.Run(fmt.Sprintf("exemplars per series: %v", exemplarsPerSeries), func(b *testing.B) {
 											payload := createExportRequest(resourceAttributeCount, histogramCount, nonHistogramCount, labelsPerMetric, exemplarsPerSeries)
+											b.ResetTimer()
 
-											for i := 0; i < b.N; i++ {
+											for range b.N {
 												converter := NewPrometheusConverter()
 												annots, err := converter.FromMetrics(context.Background(), payload.Metrics(), Settings{})
 												require.NoError(b, err)
 												require.Empty(b, annots)
 												require.NotNil(b, converter.TimeSeries())
+												require.NotNil(b, converter.Metadata())
 											}
 										})
 									}
@@ -141,6 +282,15 @@ func createExportRequest(resourceAttributeCount, histogramCount, nonHistogramCou
 	rm := request.Metrics().ResourceMetrics().AppendEmpty()
 	generateAttributes(rm.Resource().Attributes(), "resource", resourceAttributeCount)
 
+	// Fake some resource attributes.
+	for k, v := range map[string]string{
+		"service.name":        "test-service",
+		"service.namespace":   "test-namespace",
+		"service.instance.id": "id1234",
+	} {
+		rm.Resource().Attributes().PutStr(k, v)
+	}
+
 	metrics := rm.ScopeMetrics().AppendEmpty().Metrics()
 	ts := pcommon.NewTimestampFromTime(time.Now())
 
@@ -148,6 +298,8 @@ func createExportRequest(resourceAttributeCount, histogramCount, nonHistogramCou
 		m := metrics.AppendEmpty()
 		m.SetEmptyHistogram()
 		m.SetName(fmt.Sprintf("histogram-%v", i))
+		m.SetDescription("histogram")
+		m.SetUnit("unit")
 		m.Histogram().SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
 		h := m.Histogram().DataPoints().AppendEmpty()
 		h.SetTimestamp(ts)
@@ -166,6 +318,8 @@ func createExportRequest(resourceAttributeCount, histogramCount, nonHistogramCou
 		m := metrics.AppendEmpty()
 		m.SetEmptySum()
 		m.SetName(fmt.Sprintf("sum-%v", i))
+		m.SetDescription("sum")
+		m.SetUnit("unit")
 		m.Sum().SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
 		point := m.Sum().DataPoints().AppendEmpty()
 		point.SetTimestamp(ts)
@@ -178,6 +332,8 @@ func createExportRequest(resourceAttributeCount, histogramCount, nonHistogramCou
 		m := metrics.AppendEmpty()
 		m.SetEmptyGauge()
 		m.SetName(fmt.Sprintf("gauge-%v", i))
+		m.SetDescription("gauge")
+		m.SetUnit("unit")
 		point := m.Gauge().DataPoints().AppendEmpty()
 		point.SetTimestamp(ts)
 		point.SetDoubleValue(1.23)

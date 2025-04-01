@@ -19,7 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	stdlog "log"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -36,8 +36,6 @@ import (
 	"time"
 
 	"github.com/alecthomas/units"
-	"github.com/go-kit/log"
-	"github.com/go-kit/log/level"
 	"github.com/grafana/regexp"
 	"github.com/mwitkow/go-conntrack"
 	"github.com/prometheus/client_golang/prometheus"
@@ -46,6 +44,7 @@ import (
 
 	// INFO: common是普米各组件间共享的类库
 	"github.com/prometheus/common/model"
+	"github.com/prometheus/common/promslog"
 	"github.com/prometheus/common/route"
 	"github.com/prometheus/common/server"
 	toolkit_web "github.com/prometheus/exporter-toolkit/web"
@@ -61,6 +60,7 @@ import (
 	"github.com/prometheus/prometheus/template"
 	"github.com/prometheus/prometheus/util/httputil"
 	"github.com/prometheus/prometheus/util/netconnlimit"
+	"github.com/prometheus/prometheus/util/notifications"
 	api_v1 "github.com/prometheus/prometheus/web/api/v1"
 	"github.com/prometheus/prometheus/web/ui"
 )
@@ -115,18 +115,18 @@ const (
 	Stopping
 )
 
-// withStackTrace logs the stack trace in case the request panics. The function
+// withStackTracer logs the stack trace in case the request panics. The function
 // will re-raise the error which will then be handled by the net/http package.
 // It is needed because the go-kit log package doesn't manage properly the
 // panics from net/http (see https://github.com/go-kit/kit/issues/233).
-func withStackTracer(h http.Handler, l log.Logger) http.Handler {
+func withStackTracer(h http.Handler, l *slog.Logger) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if err := recover(); err != nil {
 				const size = 64 << 10
 				buf := make([]byte, size)
 				buf = buf[:runtime.Stack(buf, false)]
-				level.Error(l).Log("msg", "panic while serving request", "client", r.RemoteAddr, "url", r.URL, "err", err, "stack", buf)
+				l.Error("panic while serving request", "client", r.RemoteAddr, "url", r.URL, "err", err, "stack", buf)
 				panic(err)
 			}
 		}()
@@ -213,7 +213,7 @@ type LocalStorage interface {
 // Handler serves various HTTP endpoints of the Prometheus server.
 // INFO: webserver对象
 type Handler struct {
-	logger log.Logger
+	logger *slog.Logger
 
 	gatherer prometheus.Gatherer
 	metrics  *metrics
@@ -274,6 +274,8 @@ type Options struct {
 	RuleManager           *rules.Manager
 	Notifier              *notifier.Manager
 	Version               *PrometheusVersion
+	NotificationsGetter   func() []notifications.Notification
+	NotificationsSub      func() (<-chan notifications.Notification, func(), bool)
 	Flags                 map[string]string
 
 	ListenAddresses            []string
@@ -295,7 +297,9 @@ type Options struct {
 	RemoteReadBytesInFrame     int
 	EnableRemoteWriteReceiver  bool
 	EnableOTLPWriteReceiver    bool
+	ConvertOTLPDelta           bool
 	IsAgent                    bool
+	CTZeroIngestionEnabled     bool
 	AppName                    string
 
 	AcceptRemoteWriteProtoMsgs []config.RemoteWriteProtoMsg
@@ -306,9 +310,9 @@ type Options struct {
 
 // New initializes a new web Handler.
 // INFO: 创建web服务器对象
-func New(logger log.Logger, o *Options) *Handler {
+func New(logger *slog.Logger, o *Options) *Handler {
 	if logger == nil {
-		logger = log.NewNopLogger()
+		logger = promslog.NewNopLogger()
 	}
 
 	m := newMetrics(o.Registerer)
@@ -387,12 +391,16 @@ func New(logger log.Logger, o *Options) *Handler {
 		h.options.CORSOrigin,
 		h.runtimeInfo,
 		h.versionInfo,
+		h.options.NotificationsGetter,
+		h.options.NotificationsSub,
 		o.Gatherer,
 		o.Registerer,
 		nil,
 		o.EnableRemoteWriteReceiver,
 		o.AcceptRemoteWriteProtoMsgs,
 		o.EnableOTLPWriteReceiver,
+		o.ConvertOTLPDelta,
+		o.CTZeroIngestionEnabled,
 	)
 
 	if o.RoutePrefix != "/" {
@@ -456,7 +464,6 @@ func New(logger log.Logger, o *Options) *Handler {
 	// INFO: 前端路由的处理逻辑
 	// IMPT: 所有对前端路由的直接访问都会返回主页的html(然后在前端的逻辑里面会访问具体前端路由页面)
 	serveReactApp := func(w http.ResponseWriter, r *http.Request) {
-		// INFO: 读取主页html文件
 		indexPath := reactAssetsRoot + "/index.html"
 		f, err := ui.Assets.Open(indexPath)
 		if err != nil {
@@ -561,7 +568,7 @@ func New(logger log.Logger, o *Options) *Handler {
 	router.Post("/debug/*subpath", serveDebug)
 
 	// INFO: 服务健康状态的接口
-	router.Get("/-/healthy", func(w http.ResponseWriter, r *http.Request) {
+	router.Get("/-/healthy", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "%s is Healthy.\n", o.AppName)
 	})
@@ -569,11 +576,11 @@ func New(logger log.Logger, o *Options) *Handler {
 		w.WriteHeader(http.StatusOK)
 	})
 	// INFO: 服务是否ready的接口
-	router.Get("/-/ready", readyf(func(w http.ResponseWriter, r *http.Request) {
+	router.Get("/-/ready", readyf(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "%s is Ready.\n", o.AppName)
 	}))
-	router.Head("/-/ready", readyf(func(w http.ResponseWriter, r *http.Request) {
+	router.Head("/-/ready", readyf(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -674,7 +681,7 @@ func (h *Handler) Listeners() ([]net.Listener, error) {
 
 // Listener creates the TCP listener for web requests.
 func (h *Handler) Listener(address string, sem chan struct{}) (net.Listener, error) {
-	level.Info(h.logger).Log("msg", "Start listening for connections", "address", address)
+	h.logger.Info("Start listening for connections", "address", address)
 
 	listener, err := net.Listen("tcp", address)
 	if err != nil {
@@ -707,7 +714,7 @@ func (h *Handler) Run(ctx context.Context, listeners []net.Listener, webConfig s
 	apiPath := "/api"
 	if h.options.RoutePrefix != "/" {
 		apiPath = h.options.RoutePrefix + apiPath
-		level.Info(h.logger).Log("msg", "Router prefix", "prefix", h.options.RoutePrefix)
+		h.logger.Info("Router prefix", "prefix", h.options.RoutePrefix)
 	}
 	av1 := route.New().
 		WithInstrumentation(h.metrics.instrumentHandlerWithPrefix("/api/v1")).
@@ -717,7 +724,7 @@ func (h *Handler) Run(ctx context.Context, listeners []net.Listener, webConfig s
 
 	mux.Handle(apiPath+"/v1/", http.StripPrefix(apiPath+"/v1", av1))
 
-	errlog := stdlog.New(log.NewStdlibAdapter(level.Error(h.logger)), "", 0)
+	errlog := slog.NewLogLogger(h.logger.Handler(), slog.LevelError)
 
 	spanNameFormatter := otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
 		return fmt.Sprintf("%s %s", r.Method, r.URL.Path)
@@ -833,6 +840,13 @@ func (h *Handler) runtimeInfo() (api_v1.RuntimeInfo, error) {
 		GODEBUG:        os.Getenv("GODEBUG"),
 	}
 
+	hostname, err := os.Hostname()
+	if err != nil {
+		return status, fmt.Errorf("Error getting hostname: %w", err)
+	}
+	status.Hostname = hostname
+	status.ServerTime = time.Now().UTC()
+
 	if h.options.TSDBRetentionDuration != 0 {
 		status.StorageRetention = h.options.TSDBRetentionDuration.String()
 	}
@@ -914,7 +928,7 @@ func (h *Handler) consolesPath() string {
 }
 
 func setPathWithPrefix(prefix string) func(handlerName string, handler http.HandlerFunc) http.HandlerFunc {
-	return func(handlerName string, handler http.HandlerFunc) http.HandlerFunc {
+	return func(_ string, handler http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			handler(w, r.WithContext(httputil.ContextWithPath(r.Context(), prefix+r.URL.Path)))
 		}

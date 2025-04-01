@@ -333,7 +333,8 @@ func BenchmarkToNormalizedLower(b *testing.B) {
 							}
 							b.ResetTimer()
 							for n := 0; n < b.N; n++ {
-								toNormalisedLower(inputs[n%len(inputs)])
+								var a [256]byte
+								toNormalisedLower(inputs[n%len(inputs)], a[:])
 							}
 						})
 					}
@@ -986,7 +987,7 @@ func TestFindEqualOrPrefixStringMatchers(t *testing.T) {
 		ok = findEqualOrPrefixStringMatchers(input, func(matcher *equalStringMatcher) bool {
 			matches = append(matches, match{matcher.s, matcher.caseSensitive})
 			return true
-		}, func(prefix string, prefixCaseSensitive bool, right StringMatcher) bool {
+		}, func(prefix string, prefixCaseSensitive bool, _ StringMatcher) bool {
 			matches = append(matches, match{prefix, prefixCaseSensitive})
 			return true
 		})
@@ -1390,6 +1391,6 @@ func TestToNormalisedLower(t *testing.T) {
 		"ſſAſſa": "ssassa",
 	}
 	for input, expectedOutput := range testCases {
-		require.Equal(t, expectedOutput, toNormalisedLower(input))
+		require.Equal(t, expectedOutput, toNormalisedLower(input, nil))
 	}
 }
