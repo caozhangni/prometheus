@@ -351,6 +351,7 @@ const resolvedRetention = 15 * time.Minute
 // INFO: 对告警规则进行评估
 func (r *AlertingRule) Eval(ctx context.Context, queryOffset time.Duration, ts time.Time, query QueryFunc, externalURL *url.URL, limit int) (promql.Vector, error) {
 	ctx = NewOriginContext(ctx, NewRuleDetail(r))
+	// IMPT: 查询到说明就是需要告警
 	res, err := query(ctx, r.vector.String(), ts.Add(-queryOffset))
 	if err != nil {
 		return nil, err
@@ -358,11 +359,13 @@ func (r *AlertingRule) Eval(ctx context.Context, queryOffset time.Duration, ts t
 
 	// Create pending alerts for any new vector elements in the alert expression
 	// or update the expression value for existing elements.
+	// INFO: 一个集合,保存告警的fp
 	resultFPs := map[uint64]struct{}{}
 
 	lb := labels.NewBuilder(labels.EmptyLabels())
 	sb := labels.NewScratchBuilder(0)
 	var vec promql.Vector
+	// INFO: 告警的map
 	alerts := make(map[uint64]*Alert, len(res))
 	for _, smpl := range res {
 		// Provide the alert information to the template.
@@ -433,6 +436,7 @@ func (r *AlertingRule) Eval(ctx context.Context, queryOffset time.Duration, ts t
 	for h, a := range alerts {
 		// Check whether we already have alerting state for the identifying label set.
 		// Update the last value and annotations if so, create a new alert entry otherwise.
+		// INFO: 对于当前是Pending或者Firing的告警，则更新相关数据
 		if alert, ok := r.active[h]; ok && alert.State != StateInactive {
 			alert.Value = a.Value
 			alert.Annotations = a.Annotations
